@@ -37,6 +37,7 @@ class RetryableGeminiError(RuntimeError):
 class SummarizerWorker(QThread):
     """Worker thread that calls Gemini API for each book."""
     MAX_GEMINI_RETRIES = 3
+    MIN_RETRY_DELAY_SECONDS = 61.0
     DEFAULT_RETRY_DELAY_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 180
     DEFAULT_MAX_BOOK_WORDS = 500_000
@@ -155,7 +156,7 @@ class SummarizerWorker(QThread):
                 wait_seconds = e.retry_after_seconds
                 if wait_seconds is None:
                     wait_seconds = self.DEFAULT_RETRY_DELAY_SECONDS * attempt
-                wait_seconds = max(1.0, float(wait_seconds))
+                wait_seconds = max(self.MIN_RETRY_DELAY_SECONDS, float(wait_seconds))
                 self.progress.emit(
                     idx,
                     f'    - Retryable error: {e}. Waiting {wait_seconds:.1f}s before retry {attempt + 1}/{total_attempts}.'
