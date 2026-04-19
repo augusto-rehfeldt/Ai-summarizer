@@ -262,7 +262,7 @@ class SummarizerWorker(QThread):
             chunk_text = ' '.join(chunk_words)
             chunks.append((chunk_text, chunk_idx, total_chunks))
 
-        return {'chunks': chunks, 'max_context': max_context, 'effective_limit': effective_limit}
+        return {'chunks': chunks, 'total_chunks': total_chunks, 'max_context': max_context, 'effective_limit': effective_limit}
 
     def _call_api_with_retries(self, prompt, idx):
         total_attempts = self.MAX_RETRIES + 1
@@ -403,7 +403,12 @@ class SummarizerWorker(QThread):
                 content = getattr(msg, 'content', '') or ''
                 # Strip thinking blocks that may still appear in content
                 content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
-                content = re.sub(r'<think>.*?', '', content, flags=re.DOTALL)
+                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+                # If SUMMARY: label exists, take only what comes after it to remove preamble
+                if 'SUMMARY:' in content:
+                    content = content.split('SUMMARY:', 1)[1]
+                # Strip leading phrases that indicate internal reasoning leaked into output
+                content = re.sub(r"^\s*(The user wants me to|I need to summarize|Let me summarize|This book describes|I'll summarize|Based on the text)", '', content, flags=re.IGNORECASE)
                 text = content.strip()
                 meta = {'choices': len(resp.choices), 'finish_reason': resp.choices[0].finish_reason}
                 if thinking_text:
@@ -524,9 +529,12 @@ class SummarizerWorker(QThread):
                         text_parts.append(block)
                 text = ''.join(text_parts).strip()
             elif isinstance(content, str):
-                # Strip <thinking>...</thinking> and <think>... blocks
+                # Strip thinking blocks and extract after SUMMARY: label
                 text = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
-                text = re.sub(r'<think>.*?', '', text, flags=re.DOTALL).strip()
+                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+                if 'SUMMARY:' in text:
+                    text = text.split('SUMMARY:', 1)[1]
+                text = re.sub(r"^\s*(The user wants me to|I need to summarize|Let me summarize|This book describes|I'll summarize|Based on the text)", '', text, flags=re.IGNORECASE).strip()
             else:
                 text = str(content).strip()
             meta = {'choices': len(candidates), 'finish_reason': first.get('finish_reason')}
