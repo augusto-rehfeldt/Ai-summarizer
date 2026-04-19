@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
 from calibre.customize import InterfaceActionBase
 
-class GeminiSummarizerPlugin(InterfaceActionBase):
-    name                    = 'Gemini Book Summarizer'
-    description             = 'Summarizes selected books using Google Gemini API and saves to a custom column'
+class AISummarizerPlugin(InterfaceActionBase):
+    name                    = 'AI Book Summarizer'
+    description             = 'Summarizes selected books using AI APIs (Gemini, OpenAI, Anthropic, MiniMax) and saves to a custom column'
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Calibre Plugin'
-    version                 = (1, 0, 6)
+    version                 = (2, 0, 0)
     minimum_calibre_version = (5, 0, 0)
-    actual_plugin           = 'calibre_plugins.gemini_summarizer.action:GeminiSummarizerAction'
+    actual_plugin           = 'calibre_plugins.ai_summarizer.action:AISummarizerAction'
 
     def is_customizable(self):
         return True
 
     def config_widget(self):
-        from calibre_plugins.gemini_summarizer.config import ConfigWidget
+        from calibre_plugins.ai_summarizer.config import ConfigWidget
         return ConfigWidget()
 
     def save_settings(self, config_widget):

@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:www.minimaxi.com)",
+      "WebFetch(domain:platform.minimaxi.com)",
+      "WebFetch(domain:help.openai.com)",
+      "WebFetch(domain:www.restack.io)",
+      "WebFetch(domain:platform.anthropic.com)",
+      "WebFetch(domain:ai.google.dev)",
+      "WebFetch(domain:github.com)",
+      "Bash(mv -T Gemini-summarizer ai-summarizer)",
+      "Bash(cmd //c \"ren \\\\\"D:\\\\\\\\python\\\\\\\\Gemini-summarizer\\\\\" ai-summarizer\")",
+      "Bash(cmd.exe *)",
+      "Bash(powershell.exe *)",
+      "Bash(zip -r \"AI-Summarizer.zip\" \"Gemini-summarizer\" --exclude \"*.git*\" --exclude \"*__pycache__*\" --exclude \"*.pyc\")",
+      "Bash(bash -c \"ls -d */\")",
+      "Bash(start *)"
+    ]
+  }
+}

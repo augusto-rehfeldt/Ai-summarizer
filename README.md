@@ -1,31 +1,27 @@
-# Gemini Book Summarizer — Calibre Plugin
+# AI Book Summarizer — Calibre Plugin
 
-Summarizes books in your Calibre library using Google's Gemini API and stores the result in a custom column.
+Summarizes books in your Calibre library using AI APIs (Gemini, OpenAI, Anthropic, MiniMax) and stores the result in a custom column.
 
 ## Features
 
-- Summarizes EPUB, TXT, HTML, and MOBI books
-- Configurable Gemini model, prompt template, and word limit (default: 2000 words)
-- Writes summaries to any custom Long Text column (default: `#summary`)
-- Batch-processes multiple selected books with a progress dialog
+- **Multi-Provider Support**: Use Google Gemini, OpenAI, Anthropic Claude, or MiniMax
+- **Context-Aware Splitting**: Automatically splits large books when content exceeds 80% of model's context window
+- **Summarizes** EPUB, TXT, HTML, and MOBI books
+- **Configurable** model, prompt template, and word limit (default: 2000 words)
+- **Writes summaries** to any custom Long Text column (default: `#summary`)
+- **Batch-processes** multiple selected books with a progress dialog
 
 ---
 
 ## Installation
 
-### 1. Prerequisite — install the Google GenAI SDK
+### 1. Install the plugin
 
-```bash
-pip install -q -U google-genai
-```
-
-### 2. Install the plugin
-
-In Calibre: **Preferences → Plugins → Load plugin from file** → select `GeminiSummarizer.zip`
+In Calibre: **Preferences → Plugins → Load plugin from file** → select `AISummarizer.zip`
 
 Restart Calibre.
 
-### 3. Create the custom column
+### 2. Create the custom column
 
 **Preferences → Add your own columns → Add column**
 
@@ -37,17 +33,18 @@ Restart Calibre.
 
 Calibre stores it as `#summary`. Restart Calibre after adding.
 
-### 4. Configure
+### 3. Configure
 
-**Preferences → Plugins → Gemini Book Summarizer → Customize plugin**
+**Preferences → Plugins → AI Book Summarizer → Customize plugin**
 
-- Paste your [Gemini API key](https://aistudio.google.com/app/apikey)
-- Select model (`gemini-3-flash-preview` by default)
+- Select your AI provider (Gemini, OpenAI, Anthropic, or MiniMax)
+- Paste your API key
+- Select model
 - Verify column name is `#summary`
 
-### 5. Use
+### 4. Use
 
-Select one or more books → click **Gemini Summarize** in the toolbar.
+Select one or more books → click **AI Summarize** in the toolbar.
 
 ---
 
@@ -56,7 +53,7 @@ Select one or more books → click **Gemini Summarize** in the toolbar.
 ### Repository structure
 
 ```
-GeminiSummarizer/          ← this folder becomes the plugin source
+AISummarizer/              ← this folder becomes the plugin source
 ├── __init__.py
 ├── action.py
 ├── config.py
@@ -64,7 +61,7 @@ GeminiSummarizer/          ← this folder becomes the plugin source
 ├── summarizer.py
 ├── images/
 │   └── icon.png
-├── plugin-import-name-gemini_summarizer.txt
+├── plugin-import-name-ai_summarizer.txt
 └── README.md
 .github/
 └── workflows/
@@ -75,90 +72,87 @@ GeminiSummarizer/          ← this folder becomes the plugin source
 
 ```bash
 git init
-git remote add origin https://github.com/YOUR_USERNAME/calibre-gemini-summarizer.git
+git remote add origin https://github.com/YOUR_USERNAME/calibre-ai-summarizer.git
 git add .
 git commit -m "Initial release"
 git push -u origin main
 ```
 
-Add `.github/workflows/release.yml` (see below) then push.
-
 ### How to publish a new release
 
 **1. Bump the version** in `__init__.py`:
 ```python
-version = (1, 1, 0)   # change this
+version = (2, 0, 0)   # change this
 ```
 
 **2. Commit and tag:**
 ```bash
 git add __init__.py
-git commit -m "Release v1.1.0"
-git tag v1.1.0
+git commit -m "Release v2.0.0"
+git tag v2.0.0
 git push origin main --tags
 ```
 
 **3. GitHub Actions automatically:**
-- Zips the plugin source into `GeminiSummarizer.zip`
-- Creates a GitHub Release named `v1.1.0`
+- Zips the plugin source into `AISummarizer.zip`
+- Creates a GitHub Release named `v2.0.0`
 - Attaches the zip as a downloadable asset
 
 Users can then download the zip directly from the **Releases** page.
 
 ---
 
-### `.github/workflows/release.yml`
+## Providers and Models
 
-```yaml
-name: Build & Release Plugin
+### Google Gemini
 
-on:
-  push:
-    tags:
-      - 'v*'          # triggers on any tag like v1.0.0, v2.3.1
+| Model | Context Window | Release Date |
+|-------|---------------|-------------|
+| `gemini-3.1-flash` | 1M tokens | - |
+| `gemini-3.1-pro` | 1M tokens | 2026-02-19 |
 
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+Get API key: [Google AI Studio](https://aistudio.google.com/app/apikey)
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+### OpenAI
 
-      - name: Build plugin zip
-        run: |
-          cd GeminiSummarizer
-          zip -r ../GeminiSummarizer.zip . \
-            --exclude "*.pyc" \
-            --exclude "__pycache__/*" \
-            --exclude "*.DS_Store"
+| Model | Context Window |
+|-------|---------------|
+| `gpt-5.4` | 256k tokens |
+| `gpt-5.4-mini` | 256k tokens |
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: GeminiSummarizer.zip
-          generate_release_notes: true   # auto-generates changelog from commits
-```
+Get API key: [OpenAI Platform](https://platform.openai.com/api-keys)
 
-### Users updating the plugin
+### Anthropic Claude
 
-1. Download the new `GeminiSummarizer.zip` from GitHub Releases
-2. In Calibre: **Preferences → Plugins → find Gemini Book Summarizer → Remove**
-3. **Load plugin from file** → select new zip
-4. Restart Calibre — settings are preserved in `calibre/plugins/gemini_summarizer.json`
+| Model | Context Window | Release Date |
+|-------|---------------|-------------|
+| `claude-opus-4.7` | 200k tokens | 2026-04-16 |
+| `claude-sonnet-4.6` | 200k tokens | 2026-02-17 |
+| `claude-haiku-4.5` | 200k tokens | 2025-10-15 |
+
+Get API key: [Anthropic Console](https://console.anthropic.com/settings/keys)
+
+### MiniMax
+
+| Model | Context Window | Release Date |
+|-------|---------------|-------------|
+| `MiniMax-M2.7` | 204.8k tokens | 2026-03 |
+
+Get API key: [MiniMax Platform](https://platform.minimaxi.com)
 
 ---
 
-## Models
+## Context Window and Text Splitting
 
-| Model | Speed | Quality | Notes |
-|-------|-------|---------|-------|
-| `gemini-3-flash-preview` | Fast | ★★★★☆ | **Default** — best balance |
-| `gemini-3.1-pro-preview` | Slow | ★★★★★ | Highest quality |
-| `gemini-2.5-flash` | Very fast | ★★★☆☆ | Stable release |
-| `gemini-2.5-pro` | Medium | ★★★★☆ | Large context window |
+When a book's text exceeds 80% of the selected model's context window, the plugin automatically:
+
+1. Splits the text into chunks
+2. Summarizes each chunk individually
+3. Combines and re-summarizes the chunk summaries
+
+This ensures comprehensive coverage even for very long books.
+
+---
 
 ## License
 

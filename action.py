@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""InterfaceAction entrypoint for the Gemini Book Summarizer plugin."""
+"""InterfaceAction entrypoint for the AI Book Summarizer plugin."""
 
 import traceback
 
@@ -15,16 +15,16 @@ try:
 except Exception:
     calibre_get_icons = None
 
-from calibre_plugins.gemini_summarizer.config import prefs
+from calibre_plugins.ai_summarizer.config import prefs
 
 
-class GeminiSummarizerAction(InterfaceAction):
+class AISummarizerAction(InterfaceAction):
 
-    name = 'Gemini Book Summarizer'
+    name = 'AI Book Summarizer'
     action_spec = (
-        'Gemini Summarize',
+        'AI Summarize',
         'icon.png',
-        'Summarize selected books with Google Gemini and store in a custom column',
+        'Summarize selected books with AI (Gemini, OpenAI, Anthropic, MiniMax) and store in a custom column',
         None
     )
     action_type = 'current'
@@ -75,8 +75,8 @@ class GeminiSummarizerAction(InterfaceAction):
             if not prefs['api_key']:
                 return error_dialog(
                     self.gui, 'No API Key',
-                    'Please set your Gemini API key in\n'
-                    'Preferences → Plugins → Gemini Book Summarizer → Customize plugin.',
+                    'Please set your API key in\n'
+                    'Preferences → Plugins → AI Book Summarizer → Customize plugin.',
                     show=True
                 )
 
@@ -96,12 +96,12 @@ class GeminiSummarizerAction(InterfaceAction):
             count = len(book_ids)
             if not question_dialog(
                 self.gui, 'Confirm',
-                f'Summarize {count} book(s) using Gemini?\n'
-                f'Model: {prefs["model"]}\nColumn: {custom_col}',
+                f'Summarize {count} book(s) using AI?\n'
+                f'Provider: {prefs["provider"]}\nModel: {prefs["model"]}\nColumn: {custom_col}',
             ):
                 return
 
-            from calibre_plugins.gemini_summarizer.jobs import SummarizeJob
+            from calibre_plugins.ai_summarizer.jobs import SummarizeJob
             job = SummarizeJob(self.gui, book_ids)
             self._active_jobs.append(job)
             job.finished.connect(lambda _=0, j=job: self._drop_job_ref(j))
@@ -109,7 +109,7 @@ class GeminiSummarizerAction(InterfaceAction):
         except Exception:
             return error_dialog(
                 self.gui,
-                'Gemini Summarizer error',
+                'AI Summarizer error',
                 traceback.format_exc(),
                 det_msg=traceback.format_exc(),
                 show=True

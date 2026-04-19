@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Background job handling for the Gemini Book Summarizer plugin.
+Background job handling for the AI Book Summarizer plugin.
 Handles book text extraction, API calls, and saving results.
+Supports multiple AI providers: Gemini, OpenAI, Anthropic, MiniMax.
 """
 
 import os
@@ -11,49 +12,101 @@ import subprocess
 import time
 import re
 import socket
+from enum import Enum
 from urllib import request as urlrequest
 from urllib import error as urlerror
 
 try:
-    from qt.core import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    from qt.core import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                           QPushButton, QProgressBar, QTextEdit,
                           QThread, pyqtSignal)
 except ImportError:
-    from PyQt5.Qt import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    from PyQt5.Qt import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                            QPushButton, QProgressBar, QTextEdit,
                            QThread, pyqtSignal)
+
+
+# ─────────────────────────────────────────────
+# Provider and model definitions
+# ─────────────────────────────────────────────
+
+class Provider(Enum):
+    GEMINI = "gemini"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    MINIMAX = "minimax"
+
+
+# Context windows in tokens for known models
+MODEL_CONTEXT_WINDOWS = {
+    # OpenAI
+    "gpt-5.4": 256000,
+    "gpt-5.4-mini": 256000,
+    # Anthropic
+    "claude-opus-4.7": 200000,
+    "claude-sonnet-4.6": 200000,
+    "claude-haiku-4.5": 200000,
+    # MiniMax
+    "MiniMax-M2.7": 204800,
+    # Gemini
+    "gemini-3.1-flash": 1048576,
+    "gemini-3.1-pro": 1048576,
+}
+
+PROVIDER_MODELS = {
+    Provider.GEMINI: [
+        "gemini-3.1-flash",
+        "gemini-3.1-pro",
+    ],
+    Provider.OPENAI: [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+    ],
+    Provider.ANTHROPIC: [
+        "claude-opus-4.7",
+        "claude-sonnet-4.6",
+        "claude-haiku-4.5",
+    ],
+    Provider.MINIMAX: [
+        "MiniMax-M2.7",
+    ],
+}
 
 
 # ─────────────────────────────────────────────
 # Worker thread
 # ─────────────────────────────────────────────
 
-class RetryableGeminiError(RuntimeError):
-    def __init__(self, message, retry_after_seconds=None):
+class RetryableAPIError(RuntimeError):
+    def __init__(self, message, retry_after_seconds=None, provider=None):
         RuntimeError.__init__(self, message)
         self.retry_after_seconds = retry_after_seconds
+        self.provider = provider or "unknown"
 
 
 class SummarizerWorker(QThread):
-    """Worker thread that calls Gemini API for each book."""
-    MAX_GEMINI_RETRIES = 3
+    """Worker thread that calls AI APIs for each book."""
+    MAX_RETRIES = 3
     MIN_RETRY_DELAY_SECONDS = 61.0
     DEFAULT_RETRY_DELAY_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 180
     DEFAULT_MAX_BOOK_WORDS = 500_000
     EXTRACTION_CHAR_BUDGET = 2_000_000
     RETRYABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+    CONTEXT_THRESHOLD_RATIO = 0.8  # Use 80% of context window
+    PROMPT_OVERHEAD_TOKENS = 500  # Rough estimate for system+user prompt overhead
 
     progress   = pyqtSignal(int, str)   # (current_index, message)
     book_done  = pyqtSignal(int, str)   # (book_id, summary_text)
     book_error = pyqtSignal(int, str)   # (book_id, error_message)
     finished   = pyqtSignal()
 
-    def __init__(self, db, book_ids, api_key, model, prompt_template, max_words, max_input_words):
+    def __init__(self, db, book_ids, api_key, provider, model, prompt_template, max_words, max_input_words):
         QThread.__init__(self)
         self.db              = db
         self.book_ids        = book_ids
         self.api_key         = api_key
+        self.provider        = Provider(provider) if isinstance(provider, str) else provider
         self.model           = model
         self.prompt_template = prompt_template
         self.max_words       = max_words
@@ -107,26 +160,52 @@ class SummarizerWorker(QThread):
                             f'    - Extraction was truncated at {details.get("max_words", self.max_input_words)} words'
                         )
 
-                    self.progress.emit(idx, '  Stage: Calling Gemini API')
-                    prompt = self.prompt_template.format(
-                        title=title,
-                        authors=authors,
-                        text=content,
-                        max_words=self.max_words
-                    )
-                    self.progress.emit(idx, f'    - Model: {self.model}')
-                    self.progress.emit(
-                        idx,
-                        f'    - Prompt size: {len(prompt.split())} words, {len(prompt)} chars'
-                    )
+                    self.progress.emit(idx, f'  Stage: Calling {self.provider.value.title()} API')
 
-                    summary, api_meta = self._call_gemini_with_retries(prompt, idx)
-                    self.progress.emit(idx, f'    - API candidates: {api_meta.get("candidates", 0)}')
+                    # Check if text needs splitting due to context window
+                    split_info = self._check_context_split_needed(content)
+                    if split_info:
+                        self.progress.emit(idx, f'    - Large text detected, using chunked summarization')
+                        for i, (chunk_text, chunk_idx, chunk_total) in enumerate(split_info['chunks']):
+                            self.progress.emit(idx, f'      Chunk {chunk_idx}/{chunk_total}: {len(chunk_text.split())} words')
+                            chunk_prompt = self.prompt_template.format(
+                                title=title,
+                                authors=authors,
+                                text=chunk_text,
+                                max_words=self.max_words
+                            )
+                            if i == 0:
+                                chunk_summary, api_meta = self._call_api_with_retries(chunk_prompt, idx)
+                                combined_summary = chunk_summary
+                            else:
+                                # Add previous summary context
+                                enhanced_prompt = (
+                                    f"Previous summary: {combined_summary}\n\n"
+                                    f"Continue the summary from this point (part {chunk_idx}/{chunk_total}):\n\n{chunk_text}"
+                                )
+                                chunk_result, api_meta = self._call_api_with_retries(enhanced_prompt, idx)
+                                combined_summary = combined_summary + "\n\n" + chunk_result
+                        summary = combined_summary
+                    else:
+                        prompt = self.prompt_template.format(
+                            title=title,
+                            authors=authors,
+                            text=content,
+                            max_words=self.max_words
+                        )
+                        self.progress.emit(idx, f'    - Model: {self.model}')
+                        self.progress.emit(
+                            idx,
+                            f'    - Prompt size: {len(prompt.split())} words, {len(prompt)} chars'
+                        )
+                        summary, api_meta = self._call_api_with_retries(prompt, idx)
+
+                    self.progress.emit(idx, f'    - API response received')
                     if api_meta.get('finish_reason'):
                         self.progress.emit(idx, f'    - Finish reason: {api_meta["finish_reason"]}')
                     self.progress.emit(idx, f'    - Summary characters: {len(summary)}')
                     if not summary:
-                        raise ValueError('Gemini returned an empty response.')
+                        raise ValueError(f'{self.provider.value.title()} returned an empty response.')
                     self.book_done.emit(book_id, summary)
 
                 except Exception as e:
@@ -139,18 +218,52 @@ class SummarizerWorker(QThread):
 
     # ─── helpers ─────────────────────────────
 
-    def _call_gemini_with_retries(self, prompt, idx):
-        total_attempts = self.MAX_GEMINI_RETRIES + 1
+    def _check_context_split_needed(self, text):
+        """Check if text needs to be split due to context window limits.
+
+        Returns None if no splitting needed, or a dict with 'chunks' list if splitting needed.
+        """
+        max_context = MODEL_CONTEXT_WINDOWS.get(self.model, 100000)
+        effective_limit = int(max_context * self.CONTEXT_THRESHOLD_RATIO) - self.PROMPT_OVERHEAD_TOKENS
+
+        # Convert text to approximate tokens (rough estimate: 1 word ~= 1.3 tokens)
+        text_tokens = len(text.split()) * 1.3
+
+        if text_tokens <= effective_limit:
+            return None
+
+        # Need to split - calculate number of chunks
+        words = text.split()
+        words_per_chunk = int(effective_limit / 1.3)  # Reverse the token estimate
+
+        # Ensure we have a reasonable chunk size
+        if words_per_chunk < 1000:
+            words_per_chunk = 1000  # Minimum chunk size
+
+        chunks = []
+        chunk_idx = 0
+        total_chunks = (len(words) + words_per_chunk - 1) // words_per_chunk
+
+        for i in range(0, len(words), words_per_chunk):
+            chunk_idx += 1
+            chunk_words = words[i:i + words_per_chunk]
+            chunk_text = ' '.join(chunk_words)
+            chunks.append((chunk_text, chunk_idx, total_chunks))
+
+        return {'chunks': chunks, 'max_context': max_context, 'effective_limit': effective_limit}
+
+    def _call_api_with_retries(self, prompt, idx):
+        total_attempts = self.MAX_RETRIES + 1
         attempt = 1
         while True:
             try:
                 if attempt > 1:
                     self.progress.emit(idx, f'    - Retry attempt: {attempt}/{total_attempts}')
-                return self._call_gemini(prompt)
-            except RetryableGeminiError as e:
-                if attempt > self.MAX_GEMINI_RETRIES:
+                return self._call_api(prompt)
+            except RetryableAPIError as e:
+                if attempt > self.MAX_RETRIES:
                     raise RuntimeError(
-                        f'Gemini request still failing after {self.MAX_GEMINI_RETRIES} retries: {e}'
+                        f'{self.provider.value.title()} request still failing after {self.MAX_RETRIES} retries: {e}'
                     )
 
                 wait_seconds = e.retry_after_seconds
@@ -162,7 +275,7 @@ class SummarizerWorker(QThread):
                     f'    - Retryable error: {e}. Waiting {wait_seconds:.1f}s before retry {attempt + 1}/{total_attempts}.'
                 )
                 if not self._sleep_with_cancel(wait_seconds):
-                    raise RuntimeError('Cancelled while waiting to retry Gemini request.')
+                    raise RuntimeError('Cancelled while waiting to retry API request.')
 
                 attempt += 1
 
@@ -203,6 +316,72 @@ class SummarizerWorker(QThread):
                 return None
         return None
 
+    def _call_api(self, prompt):
+        """Call AI provider REST API based on self.provider."""
+        if self.provider == Provider.GEMINI:
+            return self._call_gemini(prompt)
+        elif self.provider == Provider.OPENAI:
+            return self._call_openai(prompt)
+        elif self.provider == Provider.ANTHROPIC:
+            return self._call_anthropic(prompt)
+        elif self.provider == Provider.MINIMAX:
+            return self._call_minimax(prompt)
+        else:
+            raise RuntimeError(f'Unknown provider: {self.provider}')
+
+    def _build_request(self, url, payload, headers, method='POST'):
+        """Build and return a urllib Request object."""
+        data = json.dumps(payload).encode('utf-8')
+        return urlrequest.Request(
+            url,
+            data=data,
+            headers=headers,
+            method=method,
+        )
+
+    def _call_openai(self, prompt):
+        """Call OpenAI chat completions API."""
+        endpoint = 'https://api.openai.com/v1/chat/completions'
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {self.api_key}',
+        }
+        payload = {
+            'model': self.model,
+            'messages': [{'role': 'user', 'content': prompt}],
+        }
+        return self._do_api_request(endpoint, payload, headers, Provider.OPENAI)
+
+    def _call_anthropic(self, prompt):
+        """Call Anthropic messages API."""
+        endpoint = 'https://api.anthropic.com/v1/messages'
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': self.api_key,
+            'anthropic-version': '2023-06-01',
+        }
+        payload = {
+            'model': self.model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': 2048,
+        }
+        return self._do_api_request(endpoint, payload, headers, Provider.ANTHROPIC)
+
+    def _call_minimax(self, prompt):
+        """Call MiniMax API (Anthropic-compatible endpoint)."""
+        endpoint = 'https://api.minimaxi.com/anthropic/v1/messages'
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': self.api_key,
+            'anthropic-version': '2023-06-01',
+        }
+        payload = {
+            'model': self.model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': 2048,
+        }
+        return self._do_api_request(endpoint, payload, headers, Provider.MINIMAX)
+
     def _call_gemini(self, prompt):
         """Call Gemini REST API without external SDK dependencies."""
         safe_endpoint = (
@@ -216,13 +395,14 @@ class SummarizerWorker(QThread):
         payload = {
             'contents': [{'parts': [{'text': prompt}]}]
         }
-        data = json.dumps(payload).encode('utf-8')
-        req = urlrequest.Request(
-            endpoint,
-            data=data,
-            headers={'Content-Type': 'application/json'},
-            method='POST',
-        )
+        headers = {'Content-Type': 'application/json'}
+        return self._do_api_request(endpoint, payload, headers, Provider.GEMINI, safe_endpoint=safe_endpoint)
+
+    def _do_api_request(self, endpoint, payload, headers, provider, safe_endpoint=None):
+        """Execute API request and parse response. Provider-specific parsing happens in _parse_response."""
+        safe_endpoint = safe_endpoint or endpoint
+        req = self._build_request(endpoint, payload, headers)
+
         try:
             with urlrequest.urlopen(req, timeout=self.REQUEST_TIMEOUT_SECONDS) as resp:
                 raw = resp.read().decode('utf-8', errors='replace')
@@ -235,45 +415,78 @@ class SummarizerWorker(QThread):
                     parsed = json.loads(body)
                 except Exception:
                     parsed = None
+                retry_delay = None
                 if retry_after is None and parsed:
-                    retry_after = self._parse_retry_delay_seconds(parsed.get('error') or {})
-                raise RetryableGeminiError(
-                    f'Gemini HTTP {e.code}',
-                    retry_after_seconds=retry_after,
+                    retry_delay = self._parse_retry_delay_seconds(parsed.get('error') or {})
+                raise RetryableAPIError(
+                    f'{provider.value.title()} HTTP {e.code}',
+                    retry_after_seconds=retry_after or retry_delay,
+                    provider=provider.value,
                 )
-            raise RuntimeError(f'Gemini HTTP {e.code} on {safe_endpoint}: {body}')
+            raise RuntimeError(f'{provider.value.title()} HTTP {e.code} on {safe_endpoint}: {body}')
         except (TimeoutError, socket.timeout) as e:
-            raise RetryableGeminiError(
-                f'Gemini request timed out after {self.REQUEST_TIMEOUT_SECONDS}s: {e}'
+            raise RetryableAPIError(
+                f'{provider.value.title()} request timed out after {self.REQUEST_TIMEOUT_SECONDS}s: {e}',
+                provider=provider.value,
             )
         except urlerror.URLError as e:
             reason = str(getattr(e, 'reason', e))
             timeout_like = 'timed out' in reason.lower() or isinstance(getattr(e, 'reason', None), socket.timeout)
             if timeout_like:
-                raise RetryableGeminiError(
-                    f'Gemini network timeout: {reason}'
+                raise RetryableAPIError(
+                    f'{provider.value.title()} network timeout: {reason}',
+                    provider=provider.value,
                 )
-            raise RuntimeError(f'Gemini request failed on {safe_endpoint}: {reason}')
+            raise RuntimeError(f'{provider.value.title()} request failed on {safe_endpoint}: {reason}')
         except Exception as e:
-            raise RuntimeError(f'Gemini request failed on {safe_endpoint}: {e}')
+            raise RuntimeError(f'{provider.value.title()} request failed on {safe_endpoint}: {e}')
 
         try:
             parsed = json.loads(raw)
         except Exception:
-            raise RuntimeError('Gemini returned non-JSON response.')
+            raise RuntimeError(f'{provider.value.title()} returned non-JSON response.')
 
-        candidates = parsed.get('candidates') or []
-        if not candidates:
-            msg = parsed.get('error') or parsed
-            raise RuntimeError(f'Gemini returned no candidates: {msg}')
+        return self._parse_response(parsed, provider)
 
-        parts = ((candidates[0].get('content') or {}).get('parts')) or []
-        text = ''.join((p.get('text') or '') for p in parts).strip()
-        meta = {
-            'candidates': len(candidates),
-            'finish_reason': candidates[0].get('finishReason'),
-        }
-        return text, meta
+    def _parse_response(self, parsed, provider):
+        """Parse provider-specific response format and extract text."""
+        if provider == Provider.OPENAI:
+            candidates = parsed.get('choices') or []
+            if not candidates:
+                raise RuntimeError(f'{provider.value.title()} returned no choices: {parsed}')
+            message = candidates[0].get('message') or {}
+            text = (message.get('content') or '').strip()
+            meta = {'choices': len(candidates), 'finish_reason': candidates[0].get('finish_reason')}
+            return text, meta
+
+        elif provider in (Provider.ANTHROPIC, Provider.MINIMAX):
+            content = parsed.get('content') or []
+            text = ''
+            for block in content:
+                if block.get('type') == 'text':
+                    text = (block.get('text') or '').strip()
+                    break
+            if not text:
+                # Try as a list of dicts (some MiniMax responses)
+                if isinstance(content, list) and content:
+                    text = str(content[0]) if isinstance(content[0], str) else ''
+            meta = {'content_blocks': len(content)}
+            return text, meta
+
+        elif provider == Provider.GEMINI:
+            candidates = parsed.get('candidates') or []
+            if not candidates:
+                msg = parsed.get('error') or parsed
+                raise RuntimeError(f'{provider.value.title()} returned no candidates: {msg}')
+            parts = ((candidates[0].get('content') or {}).get('parts')) or []
+            text = ''.join((p.get('text') or '') for p in parts).strip()
+            meta = {
+                'candidates': len(candidates),
+                'finish_reason': candidates[0].get('finishReason'),
+            }
+            return text, meta
+
+        raise RuntimeError(f'Unknown provider for parsing: {provider}')
     def _extract_book_text(self, book_id, title, max_words=120_000, char_budget=2_000_000):
         """
         Try to extract plain text from the book.
@@ -509,7 +722,7 @@ class SummarizeJob(QDialog):
         self.worker   = None
         self.failed_books = []
 
-        self.setWindowTitle('Gemini Book Summarizer')
+        self.setWindowTitle('AI Book Summarizer')
         self.setMinimumWidth(520)
         self.setMinimumHeight(300)
 
@@ -541,7 +754,7 @@ class SummarizeJob(QDialog):
         layout.addLayout(btn_row)
 
     def start(self):
-        from calibre_plugins.gemini_summarizer.config import prefs
+        from calibre_plugins.ai_summarizer.config import prefs
 
         self.show()
 
@@ -549,6 +762,7 @@ class SummarizeJob(QDialog):
             db              = self.db,
             book_ids        = self.book_ids,
             api_key         = prefs['api_key'],
+            provider        = prefs['provider'],
             model           = prefs['model'],
             prompt_template = prefs['prompt'],
             max_words       = prefs['max_words'],
@@ -567,7 +781,7 @@ class SummarizeJob(QDialog):
         self._log(msg)
 
     def _on_book_done(self, book_id, summary):
-        from calibre_plugins.gemini_summarizer.config import prefs
+        from calibre_plugins.ai_summarizer.config import prefs
         col = prefs['custom_column']
         mi  = self.db.get_metadata(book_id)
         title = mi.title
@@ -581,7 +795,7 @@ class SummarizeJob(QDialog):
             # Fallback: append to comments
             try:
                 old_comments = mi.comments or ''
-                new_comments = old_comments + f'\n\n--- Gemini Summary ---\n{summary}'
+                new_comments = old_comments + f'\n\n--- AI Summary ---\n{summary}'
                 self.db.set_field('comments', {book_id: new_comments})
             except Exception:
                 pass

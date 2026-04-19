@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Configuration widget for Gemini Book Summarizer plugin.
+Configuration widget for AI Book Summarizer plugin.
 """
 
 try:
@@ -14,11 +14,12 @@ except ImportError:
 
 from calibre.utils.config import JSONConfig
 
-# Plugin prefs stored in: calibre/plugins/gemini_summarizer.json
-prefs = JSONConfig('plugins/gemini_summarizer')
+# Plugin prefs stored in: calibre/plugins/ai_summarizer.json
+prefs = JSONConfig('plugins/ai_summarizer')
 
 prefs.defaults['api_key']       = ''
-prefs.defaults['model']         = 'gemini-3-flash-preview'
+prefs.defaults['provider']      = 'gemini'
+prefs.defaults['model']         = 'gemini-3.1-pro'
 prefs.defaults['custom_column'] = '#summary'
 prefs.defaults['max_words']     = 2000
 prefs.defaults['max_input_words'] = 500000
@@ -32,17 +33,31 @@ prefs.defaults['prompt']        = (
     "Text sample:\n{text}"
 )
 
-AVAILABLE_MODELS = [
-    'gemini-3-flash-preview',  # default
-    'gemini-3.1-pro-preview',
-    'gemini-3-pro',
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-    'gemini-1.5-flash',
-    'gemini-1.5-pro',
-]
+PROVIDER_MODELS = {
+    'gemini': [
+        'gemini-3.1-flash',
+        'gemini-3.1-pro',
+    ],
+    'openai': [
+        'gpt-5.4',
+        'gpt-5.4-mini',
+    ],
+    'anthropic': [
+        'claude-opus-4.7',
+        'claude-sonnet-4.6',
+        'claude-haiku-4.5',
+    ],
+    'minimax': [
+        'MiniMax-M2.7',
+    ],
+}
+
+PROVIDER_DISPLAY_NAMES = {
+    'gemini': 'Google Gemini',
+    'openai': 'OpenAI',
+    'anthropic': 'Anthropic Claude',
+    'minimax': 'MiniMax',
+}
 
 
 class ConfigWidget(QWidget):
@@ -51,13 +66,28 @@ class ConfigWidget(QWidget):
         QWidget.__init__(self)
         self.l = QVBoxLayout()
         self.setLayout(self.l)
-        self.setWindowTitle('Gemini Book Summarizer Configuration')
+        self.setWindowTitle('AI Book Summarizer Configuration')
 
-        # --- API Key ---
-        api_group = QGroupBox('Gemini API Settings')
+        # --- API Settings ---
+        api_group = QGroupBox('AI API Settings')
         api_layout = QVBoxLayout()
         api_group.setLayout(api_layout)
 
+        # Provider dropdown
+        provider_layout = QHBoxLayout()
+        provider_layout.addWidget(QLabel('Provider:'))
+        self.provider_combo = QComboBox(self)
+        for prov_id, prov_name in PROVIDER_DISPLAY_NAMES.items():
+            self.provider_combo.addItem(prov_name, prov_id)
+        idx = self.provider_combo.findData(prefs['provider'])
+        if idx >= 0:
+            self.provider_combo.setCurrentIndex(idx)
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        provider_layout.addWidget(self.provider_combo)
+        provider_layout.addStretch()
+        api_layout.addLayout(provider_layout)
+
+        # API Key
         key_layout = QHBoxLayout()
         key_layout.addWidget(QLabel('API Key:'))
         self.api_key_edit = QLineEdit(self)
@@ -66,7 +96,7 @@ class ConfigWidget(QWidget):
         except AttributeError:
             self.api_key_edit.setEchoMode(QLineEdit.Password)
         self.api_key_edit.setText(prefs['api_key'])
-        self.api_key_edit.setPlaceholderText('Enter your Gemini API key...')
+        self._update_api_key_placeholder()
         key_layout.addWidget(self.api_key_edit)
         self.show_key_btn = QPushButton('Show')
         self.show_key_btn.setFixedWidth(50)
@@ -74,11 +104,11 @@ class ConfigWidget(QWidget):
         key_layout.addWidget(self.show_key_btn)
         api_layout.addLayout(key_layout)
 
+        # Model dropdown
         model_layout = QHBoxLayout()
         model_layout.addWidget(QLabel('Model:'))
         self.model_combo = QComboBox(self)
-        for m in AVAILABLE_MODELS:
-            self.model_combo.addItem(m)
+        self._populate_models(prefs['provider'])
         idx = self.model_combo.findText(prefs['model'])
         if idx >= 0:
             self.model_combo.setCurrentIndex(idx)
@@ -148,12 +178,38 @@ class ConfigWidget(QWidget):
         self.l.addWidget(prompt_group)
         self.l.addStretch()
 
+    def _populate_models(self, provider):
+        """Populate the model dropdown based on selected provider."""
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        models = PROVIDER_MODELS.get(provider, PROVIDER_MODELS['gemini'])
+        for m in models:
+            self.model_combo.addItem(m)
+        self.model_combo.blockSignals(False)
+
+    def _on_provider_changed(self, index):
+        """Handle provider change - update model dropdown and API key placeholder."""
+        provider = self.provider_combo.itemData(index)
+        self._populate_models(provider)
+        self._update_api_key_placeholder()
+
+    def _update_api_key_placeholder(self):
+        """Update API key placeholder text based on selected provider."""
+        provider = self.provider_combo.itemData(self.provider_combo.currentIndex())
+        placeholders = {
+            'gemini': 'Enter your Gemini API key...',
+            'openai': 'Enter your OpenAI API key...',
+            'anthropic': 'Enter your Anthropic API key...',
+            'minimax': 'Enter your MiniMax API key...',
+        }
+        self.api_key_edit.setPlaceholderText(placeholders.get(provider, 'Enter your API key...'))
+
     def toggle_key_visibility(self):
         try:
             is_password = self.api_key_edit.echoMode() in (QLineEdit.EchoMode.Password, QLineEdit.Password)
         except AttributeError:
             is_password = self.api_key_edit.echoMode() == QLineEdit.Password
-        
+
         if is_password:
             self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal if hasattr(QLineEdit, 'EchoMode') else QLineEdit.Normal)
             self.show_key_btn.setText('Hide')
@@ -172,6 +228,7 @@ class ConfigWidget(QWidget):
         if custom_column and not custom_column.startswith('#'):
             custom_column = '#%s' % custom_column.lstrip('#')
         prefs['api_key']       = self.api_key_edit.text().strip()
+        prefs['provider']      = self.provider_combo.itemData(self.provider_combo.currentIndex())
         prefs['model']         = self.model_combo.currentText()
         prefs['custom_column'] = custom_column
         prefs['max_words']     = self.max_words_spin.value()
