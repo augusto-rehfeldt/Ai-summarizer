@@ -17,6 +17,13 @@ from urllib import request as urlrequest
 from urllib import error as urlerror
 
 try:
+    from openai import OpenAI as _OpenAIClient
+    _HAS_OPENAI_CLIENT = True
+except ImportError:
+    _OpenAIClient = None
+    _HAS_OPENAI_CLIENT = False
+
+try:
     from qt.core import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                           QPushButton, QProgressBar, QTextEdit,
                           QThread, pyqtSignal)
@@ -165,7 +172,8 @@ class SummarizerWorker(QThread):
                     # Check if text needs splitting due to context window
                     split_info = self._check_context_split_needed(content)
                     if split_info:
-                        self.progress.emit(idx, f'    - Large text detected, using chunked summarization')
+                        self.progress.emit(idx, f'    - Large text detected ({split_info["total_chunks"]} chunks), using two-phase summarization')
+                        chunk_summaries = []
                         for i, (chunk_text, chunk_idx, chunk_total) in enumerate(split_info['chunks']):
                             self.progress.emit(idx, f'      Chunk {chunk_idx}/{chunk_total}: {len(chunk_text.split())} words')
                             chunk_prompt = self.prompt_template.format(
@@ -174,18 +182,22 @@ class SummarizerWorker(QThread):
                                 text=chunk_text,
                                 max_words=self.max_words
                             )
-                            if i == 0:
-                                chunk_summary, api_meta = self._call_api_with_retries(chunk_prompt, idx)
-                                combined_summary = chunk_summary
-                            else:
-                                # Add previous summary context
-                                enhanced_prompt = (
-                                    f"Previous summary: {combined_summary}\n\n"
-                                    f"Continue the summary from this point (part {chunk_idx}/{chunk_total}):\n\n{chunk_text}"
-                                )
-                                chunk_result, api_meta = self._call_api_with_retries(enhanced_prompt, idx)
-                                combined_summary = combined_summary + "\n\n" + chunk_result
-                        summary = combined_summary
+                            chunk_summary, api_meta = self._call_api_with_retries(chunk_prompt, idx)
+                            chunk_summaries.append(chunk_summary)
+                            self.progress.emit(idx, f'      Chunk {chunk_idx} summary: {len(chunk_summary)} chars')
+
+                        # Phase 2: Synthesize all chunk summaries into a single final summary
+                        self.progress.emit(idx, f'    - Synthesizing {len(chunk_summaries)} chunk summaries into final summary')
+                        combined_chunks = '\n\n'.join(chunk_summaries)
+                        synthesis_prompt = (
+                            f"You have summaries of a book in parts. Combine them into a single coherent summary.\n\n"
+                            f"Title: {title}\n"
+                            f"Author: {authors}\n\n"
+                            f"Part summaries:\n{combined_chunks}\n\n"
+                            f"Provide a unified summary in approximately {self.max_words} words:"
+                        )
+                        summary, api_meta = self._call_api_with_retries(synthesis_prompt, idx)
+                        self.progress.emit(idx, f'    - Final synthesized summary: {len(summary)} chars')
                     else:
                         prompt = self.prompt_template.format(
                             title=title,
@@ -368,17 +380,45 @@ class SummarizerWorker(QThread):
         return self._do_api_request(endpoint, payload, headers, Provider.ANTHROPIC)
 
     def _call_minimax(self, prompt):
-        """Call MiniMax API (Anthropic-compatible endpoint)."""
-        endpoint = 'https://api.minimaxi.com/anthropic/v1/messages'
+        """Call MiniMax API using OpenAI-compatible endpoint."""
+        if _HAS_OPENAI_CLIENT:
+            try:
+                client = _OpenAIClient(
+                    api_key=self.api_key,
+                    base_url='https://api.minimax.io/v1'
+                )
+                resp = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{'role': 'user', 'content': prompt}],
+                    extra_body={'reasoning_split': True},
+                    timeout=self.REQUEST_TIMEOUT_SECONDS,
+                )
+                # reasoning_split=True puts thinking in reasoning_details, clean text in content
+                msg = resp.choices[0].message
+                reasoning = getattr(msg, 'reasoning_details', None) or []
+                thinking_text = ''.join(
+                    r.get('text', '') for r in reasoning
+                    if isinstance(r, dict)
+                ) if isinstance(reasoning, list) else ''
+                content = getattr(msg, 'content', '') or ''
+                text = content.strip()
+                meta = {'choices': len(resp.choices), 'finish_reason': resp.choices[0].finish_reason}
+                if thinking_text:
+                    meta['thinking_chars'] = len(thinking_text)
+                return text, meta
+            except Exception as e:
+                # Fall through to HTTP fallback
+                print(f'[MiniMax] OpenAI client failed: {e}, falling back to HTTP')
+
+        # HTTP fallback
+        endpoint = 'https://api.minimax.io/v1/chat/completions'
         headers = {
             'Content-Type': 'application/json',
-            'x-api-key': self.api_key,
-            'anthropic-version': '2023-06-01',
+            'Authorization': f'Bearer {self.api_key}',
         }
         payload = {
             'model': self.model,
             'messages': [{'role': 'user', 'content': prompt}],
-            'max_tokens': 2048,
         }
         return self._do_api_request(endpoint, payload, headers, Provider.MINIMAX)
 
@@ -459,7 +499,37 @@ class SummarizerWorker(QThread):
             meta = {'choices': len(candidates), 'finish_reason': candidates[0].get('finish_reason')}
             return text, meta
 
-        elif provider in (Provider.ANTHROPIC, Provider.MINIMAX):
+        elif provider == Provider.MINIMAX:
+            candidates = parsed.get('choices') or []
+            if not candidates:
+                raise RuntimeError(f'{provider.value.title()} returned no choices: {parsed}')
+            first = candidates[0]
+            msg = first.get('message') or {}
+            content = msg.get('content') or ''
+            # Handle content as a list of blocks (MiniMax may return [{type, text}])
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get('type') == 'thinking' or 'thinking' in block:
+                            continue  # Skip extended thinking blocks
+                        if block.get('type') == 'text' and 'text' in block:
+                            text_parts.append(block['text'])
+                        elif 'text' in block and isinstance(block['text'], str):
+                            text_parts.append(block['text'])
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                text = ''.join(text_parts).strip()
+            elif isinstance(content, str):
+                # Strip <thinking>...</thinking> and <think>... blocks
+                text = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
+                text = re.sub(r'<think>.*?', '', text, flags=re.DOTALL).strip()
+            else:
+                text = str(content).strip()
+            meta = {'choices': len(candidates), 'finish_reason': first.get('finish_reason')}
+            return text, meta
+
+        elif provider == Provider.ANTHROPIC:
             content = parsed.get('content') or []
             text = ''
             for block in content:
