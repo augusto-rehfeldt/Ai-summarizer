@@ -401,6 +401,9 @@ class SummarizerWorker(QThread):
                     if isinstance(r, dict)
                 ) if isinstance(reasoning, list) else ''
                 content = getattr(msg, 'content', '') or ''
+                # Strip thinking blocks that may still appear in content
+                content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
+                content = re.sub(r'<think>.*?', '', content, flags=re.DOTALL)
                 text = content.strip()
                 meta = {'choices': len(resp.choices), 'finish_reason': resp.choices[0].finish_reason}
                 if thinking_text:

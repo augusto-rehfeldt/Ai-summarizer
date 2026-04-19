@@ -24,13 +24,15 @@ prefs.defaults['custom_column'] = '#summary'
 prefs.defaults['max_words']     = 2000
 prefs.defaults['max_input_words'] = 500000
 prefs.defaults['prompt']        = (
-    "Please provide a comprehensive summary of the following book text. "
-    "The summary should capture the main themes, key plot points or arguments, "
-    "important characters or concepts, and the overall significance of the work. "
-    "DO NOT ADD ANYTHING TO THE OUTPUT TEXT BUT THE SUMMARY. NO COMMENTS, NO INTRODUCTORY EXPLANATIONS, etc."
-    "Keep the summary under {max_words} words.\n\n"
-    "Book: {title} by {authors}\n\n"
-    "Text sample:\n{text}"
+    "You are a book summary generator. Write ONLY the summary — no preamble, "
+    "no explanation of what you are doing, no meta-comments, no \"Here is the summary:\", "
+    "no \"This text describes\", nothing but the summary itself.\n\n"
+    "Title: {title}\n"
+    "Author: {authors}\n\n"
+    "Write a {max_words}-word summary of the following book text. "
+    "Cover: main themes, key plot points or arguments, important characters or concepts, overall structure.\n\n"
+    "TEXT:\n{text}\n\n"
+    "SUMMARY:"
 )
 
 PROVIDER_MODELS = {
