@@ -914,7 +914,6 @@ class SummarizeJob(QDialog):
     def _on_progress(self, idx, msg):
         if msg and msg.strip():
             self.status_label.setText(msg)
-        self.progress_bar.setValue(idx)
         self._log(msg)
 
     def _on_book_done(self, book_id, summary):
