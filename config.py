@@ -23,6 +23,7 @@ prefs.defaults['model']         = 'gemini-3.1-pro'
 prefs.defaults['custom_column'] = '#summary'
 prefs.defaults['max_words']     = 2000
 prefs.defaults['max_input_words'] = 500000
+prefs.defaults['batch_size']    = 1
 prefs.defaults['prompt']        = (
     "You are a book summary generator. Write ONLY the summary — no preamble, "
     "no explanation of what you are doing, no meta-comments, no \"Here is the summary:\", "
@@ -153,6 +154,16 @@ class ConfigWidget(QWidget):
         input_words_row.addStretch()
         col_layout.addLayout(input_words_row)
 
+        batch_row = QHBoxLayout()
+        batch_row.addWidget(QLabel('Concurrent API requests:'))
+        self.batch_size_spin = QSpinBox(self)
+        self.batch_size_spin.setRange(1, 20)
+        self.batch_size_spin.setValue(prefs['batch_size'])
+        batch_row.addWidget(self.batch_size_spin)
+        batch_row.addWidget(QLabel('(1=sequential, up to 20=parallel)'))
+        batch_row.addStretch()
+        col_layout.addLayout(batch_row)
+
         col_layout.addWidget(QLabel(
             '<small>Create the custom column in Calibre first:<br>'
             'Preferences → Add your own columns → Add column<br>'
@@ -235,4 +246,5 @@ class ConfigWidget(QWidget):
         prefs['custom_column'] = custom_column
         prefs['max_words']     = self.max_words_spin.value()
         prefs['max_input_words'] = self.max_input_words_spin.value()
+        prefs['batch_size']    = self.batch_size_spin.value()
         prefs['prompt']        = self.prompt_edit.toPlainText()

@@ -13,6 +13,7 @@ import time
 import re
 import socket
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib import request as urlrequest
 from urllib import error as urlerror
 
@@ -108,7 +109,7 @@ class SummarizerWorker(QThread):
     book_error = pyqtSignal(int, str)   # (book_id, error_message)
     finished   = pyqtSignal()
 
-    def __init__(self, db, book_ids, api_key, provider, model, prompt_template, max_words, max_input_words):
+    def __init__(self, db, book_ids, api_key, provider, model, prompt_template, max_words, max_input_words, batch_size=1):
         QThread.__init__(self)
         self.db              = db
         self.book_ids        = book_ids
@@ -118,6 +119,7 @@ class SummarizerWorker(QThread):
         self.prompt_template = prompt_template
         self.max_words       = max_words
         self.max_input_words = int(max_input_words or self.DEFAULT_MAX_BOOK_WORDS)
+        self.batch_size      = max(1, min(batch_size, 20))
         self._cancelled      = False
 
     def cancel(self):
@@ -126,107 +128,160 @@ class SummarizerWorker(QThread):
     def run(self):
         try:
             total = len(self.book_ids)
+            batch_size = self.batch_size
+
+            self.progress.emit(0, f'Pre-extracting text for {total} books...')
+
+            extracted_books = []
             for idx, book_id in enumerate(self.book_ids):
                 if self._cancelled:
                     break
-
                 try:
                     mi = self.db.get_metadata(book_id)
                     title   = mi.title or 'Unknown Title'
                     authors = ', '.join(mi.authors) if mi.authors else 'Unknown Author'
 
-                    self.progress.emit(idx, '')
-                    self.progress.emit(idx, f'[{idx+1}/{total}] {title}')
-                    self.progress.emit(idx, '  Stage: Extracting text')
                     content, details = self._extract_book_text(
                         book_id,
                         title,
                         max_words=self.max_input_words,
                         char_budget=self.EXTRACTION_CHAR_BUDGET,
                     )
-                    available_formats = details.get('formats') or []
-                    self.progress.emit(idx, f'    - Available formats: {", ".join(available_formats) if available_formats else "none"}')
-                    self.progress.emit(idx, f'    - Chosen format: {details.get("chosen_fmt") or "unknown"}')
-                    if details.get('path'):
-                        self.progress.emit(idx, f'    - Source path: {details["path"]}')
-                    if details.get('extractor'):
-                        self.progress.emit(idx, f'    - Extractor: {details["extractor"]}')
-
-                    if not content:
-                        if details.get('error'):
-                            self.progress.emit(idx, f'    - Extraction detail: {details["error"]}')
-                        self.book_error.emit(book_id, 'Could not extract text from book (no supported format found).')
-                        continue
-                    self.progress.emit(
-                        idx,
-                        f'    - Extracted text: {details.get("word_count", 0)} words, {len(content)} chars'
-                    )
-                    if details.get('truncated'):
-                        self.progress.emit(
-                            idx,
-                            f'    - Extraction was truncated at {details.get("max_words", self.max_input_words)} words'
-                        )
-
-                    self.progress.emit(idx, f'  Stage: Calling {self.provider.value.title()} API')
-
-                    # Check if text needs splitting due to context window
-                    split_info = self._check_context_split_needed(content)
-                    if split_info:
-                        self.progress.emit(idx, f'    - Large text detected ({split_info["total_chunks"]} chunks), using two-phase summarization')
-                        chunk_summaries = []
-                        for i, (chunk_text, chunk_idx, chunk_total) in enumerate(split_info['chunks']):
-                            self.progress.emit(idx, f'      Chunk {chunk_idx}/{chunk_total}: {len(chunk_text.split())} words')
-                            chunk_prompt = self.prompt_template.format(
-                                title=title,
-                                authors=authors,
-                                text=chunk_text,
-                                max_words=self.max_words
-                            )
-                            chunk_summary, api_meta = self._call_api_with_retries(chunk_prompt, idx)
-                            chunk_summaries.append(chunk_summary)
-                            self.progress.emit(idx, f'      Chunk {chunk_idx} summary: {len(chunk_summary)} chars')
-
-                        # Phase 2: Synthesize all chunk summaries into a single final summary
-                        self.progress.emit(idx, f'    - Synthesizing {len(chunk_summaries)} chunk summaries into final summary')
-                        combined_chunks = '\n\n'.join(chunk_summaries)
-                        synthesis_prompt = (
-                            f"You have summaries of a book in parts. Combine them into a single coherent summary.\n\n"
-                            f"Title: {title}\n"
-                            f"Author: {authors}\n\n"
-                            f"Part summaries:\n{combined_chunks}\n\n"
-                            f"Provide a unified summary in approximately {self.max_words} words:"
-                        )
-                        summary, api_meta = self._call_api_with_retries(synthesis_prompt, idx)
-                        self.progress.emit(idx, f'    - Final synthesized summary: {len(summary)} chars')
-                    else:
-                        prompt = self.prompt_template.format(
-                            title=title,
-                            authors=authors,
-                            text=content,
-                            max_words=self.max_words
-                        )
-                        self.progress.emit(idx, f'    - Model: {self.model}')
-                        self.progress.emit(
-                            idx,
-                            f'    - Prompt size: {len(prompt.split())} words, {len(prompt)} chars'
-                        )
-                        summary, api_meta = self._call_api_with_retries(prompt, idx)
-
-                    self.progress.emit(idx, f'    - API response received')
-                    if api_meta.get('finish_reason'):
-                        self.progress.emit(idx, f'    - Finish reason: {api_meta["finish_reason"]}')
-                    self.progress.emit(idx, f'    - Summary characters: {len(summary)}')
-                    if not summary:
-                        raise ValueError(f'{self.provider.value.title()} returned an empty response.')
-                    self.book_done.emit(book_id, summary)
-
+                    extracted_books.append({
+                        'idx': idx,
+                        'book_id': book_id,
+                        'title': title,
+                        'authors': authors,
+                        'content': content,
+                        'details': details,
+                    })
                 except Exception as e:
                     self.book_error.emit(book_id, traceback.format_exc())
+
+            if self._cancelled:
+                self.finished.emit()
+                return
+
+            completed = 0
+            total_books = len(extracted_books)
+
+            if batch_size > 1 and total_books > 1:
+                self.progress.emit(0, f'Processing {total_books} books with {batch_size} concurrent workers...')
+
+                def process_book(book_data):
+                    result = self._summarize_book(book_data)
+                    return book_data['book_id'], result
+
+                with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                    futures = {executor.submit(process_book, b): b for b in extracted_books}
+                    for future in as_completed(futures):
+                        if self._cancelled:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            break
+                        try:
+                            book_id, result = future.result()
+                            completed += 1
+                            if result['success']:
+                                self.book_done.emit(book_id, result['summary'])
+                            else:
+                                self.book_error.emit(book_id, result['error'])
+                        except Exception as e:
+                            book_id = futures[future]['book_id']
+                            self.book_error.emit(book_id, traceback.format_exc())
+            else:
+                for book_data in extracted_books:
+                    if self._cancelled:
+                        break
+                    completed += 1
+                    book_id, result = self._summarize_book(book_data)
+                    if result['success']:
+                        self.book_done.emit(book_id, result['summary'])
+                    else:
+                        self.book_error.emit(book_id, result['error'])
 
         except Exception as e:
             self.book_error.emit(-1, f'Fatal error: {traceback.format_exc()}')
         finally:
             self.finished.emit()
+
+    def _summarize_book(self, book_data):
+        idx = book_data['idx']
+        book_id = book_data['book_id']
+        title = book_data['title']
+        authors = book_data['authors']
+        content = book_data['content']
+        details = book_data['details']
+        total = len(self.book_ids)
+
+        self.progress.emit(idx, f'[{idx+1}/{total}] {title}')
+        self.progress.emit(idx, '  Stage: Extracting text')
+        available_formats = details.get('formats') or []
+        self.progress.emit(idx, f'    - Available formats: {", ".join(available_formats) if available_formats else "none"}')
+        self.progress.emit(idx, f'    - Chosen format: {details.get("chosen_fmt") or "unknown"}')
+        if details.get('path'):
+            self.progress.emit(idx, f'    - Source path: {details["path"]}')
+        if details.get('extractor'):
+            self.progress.emit(idx, f'    - Extractor: {details["extractor"]}')
+
+        if not content:
+            if details.get('error'):
+                self.progress.emit(idx, f'    - Extraction detail: {details["error"]}')
+            return {'success': False, 'error': 'Could not extract text from book (no supported format found).', 'book_id': book_id}
+
+        self.progress.emit(idx, f'    - Extracted text: {details.get("word_count", 0)} words, {len(content)} chars')
+        if details.get('truncated'):
+            self.progress.emit(idx, f'    - Extraction was truncated at {details.get("max_words", self.max_input_words)} words')
+
+        self.progress.emit(idx, f'  Stage: Calling {self.provider.value.title()} API')
+
+        try:
+            split_info = self._check_context_split_needed(content)
+            if split_info:
+                self.progress.emit(idx, f'    - Large text detected ({split_info["total_chunks"]} chunks), using two-phase summarization')
+                chunk_summaries = []
+                for i, (chunk_text, chunk_idx, chunk_total) in enumerate(split_info['chunks']):
+                    self.progress.emit(idx, f'      Chunk {chunk_idx}/{chunk_total}: {len(chunk_text.split())} words')
+                    chunk_prompt = self.prompt_template.format(
+                        title=title,
+                        authors=authors,
+                        text=chunk_text,
+                        max_words=self.max_words
+                    )
+                    chunk_summary, api_meta = self._call_api_with_retries(chunk_prompt, idx)
+                    chunk_summaries.append(chunk_summary)
+                    self.progress.emit(idx, f'      Chunk {chunk_idx} summary: {len(chunk_summary)} chars')
+
+                self.progress.emit(idx, f'    - Synthesizing {len(chunk_summaries)} chunk summaries into final summary')
+                combined_chunks = '\n\n'.join(chunk_summaries)
+                synthesis_prompt = (
+                    f"You have summaries of a book in parts. Combine them into a single coherent summary.\n\n"
+                    f"Title: {title}\n"
+                    f"Author: {authors}\n\n"
+                    f"Part summaries:\n{combined_chunks}\n\n"
+                    f"Provide a unified summary in approximately {self.max_words} words:"
+                )
+                summary, api_meta = self._call_api_with_retries(synthesis_prompt, idx)
+                self.progress.emit(idx, f'    - Final synthesized summary: {len(summary)} chars')
+            else:
+                prompt = self.prompt_template.format(
+                    title=title,
+                    authors=authors,
+                    text=content,
+                    max_words=self.max_words
+                )
+                self.progress.emit(idx, f'    - Model: {self.model}')
+                self.progress.emit(idx, f'    - Prompt size: {len(prompt.split())} words, {len(prompt)} chars')
+                summary, api_meta = self._call_api_with_retries(prompt, idx)
+
+            self.progress.emit(idx, f'    - API response received')
+            if api_meta.get('finish_reason'):
+                self.progress.emit(idx, f'    - Finish reason: {api_meta["finish_reason"]}')
+            self.progress.emit(idx, f'    - Summary characters: {len(summary)}')
+            if not summary:
+                return {'success': False, 'error': f'{self.provider.value.title()} returned an empty response.', 'book_id': book_id}
+            return {'success': True, 'summary': summary, 'book_id': book_id}
+        except Exception as e:
+            return {'success': False, 'error': traceback.format_exc(), 'book_id': book_id}
 
     # ─── helpers ─────────────────────────────
 
@@ -848,6 +903,7 @@ class SummarizeJob(QDialog):
             prompt_template = prefs['prompt'],
             max_words       = prefs['max_words'],
             max_input_words = prefs['max_input_words'],
+            batch_size      = prefs['batch_size'],
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.book_done.connect(self._on_book_done)
