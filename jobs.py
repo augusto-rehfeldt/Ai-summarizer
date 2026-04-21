@@ -57,13 +57,13 @@ MODEL_CONTEXT_WINDOWS = {
     # MiniMax
     "MiniMax-M2.7": 204800,
     # Gemini
-    "gemini-3-flash": 1048576,
+    "gemini-3-flash-preview": 1048576,
     "gemini-3.1-pro": 1048576,
 }
 
 PROVIDER_MODELS = {
     Provider.GEMINI: [
-        "gemini-3-flash",
+        "gemini-3-flash-preview",
         "gemini-3.1-pro",
     ],
     Provider.OPENAI: [
@@ -895,10 +895,14 @@ class SummarizeJob(QDialog):
 
         self.show()
 
+        provider = prefs['provider']
+        api_keys = prefs.get('api_keys', {}) or {}
+        api_key = api_keys.get(provider, '')
+
         self.worker = SummarizerWorker(
-            db              = self.db,
-            book_ids        = self.book_ids,
-            api_key         = prefs['api_key'],
+            db = self.db,
+            book_ids = self.book_ids,
+            api_key = api_key,
             provider        = prefs['provider'],
             model           = prefs['model'],
             prompt_template = prefs['prompt'],

@@ -17,8 +17,8 @@ from calibre.utils.config import JSONConfig
 # Plugin prefs stored in: calibre/plugins/ai_summarizer.json
 prefs = JSONConfig('plugins/ai_summarizer')
 
-prefs.defaults['api_key']       = ''
-prefs.defaults['provider']      = 'gemini'
+prefs.defaults['api_keys'] = {'gemini': '', 'openai': '', 'anthropic': '', 'minimax': ''}
+prefs.defaults['provider'] = 'gemini'
 prefs.defaults['model']         = 'gemini-3.1-pro'
 prefs.defaults['custom_column'] = '#summary'
 prefs.defaults['max_words']     = 2000
@@ -38,7 +38,7 @@ prefs.defaults['prompt']        = (
 
 PROVIDER_MODELS = {
     'gemini': [
-        'gemini-3-flash',
+        'gemini-3-flash-preview',
         'gemini-3.1-pro',
     ],
     'openai': [
@@ -90,7 +90,9 @@ class ConfigWidget(QWidget):
         provider_layout.addStretch()
         api_layout.addLayout(provider_layout)
 
-        # API Key
+        self._current_provider = prefs['provider']
+
+        # API Key (per-provider)
         key_layout = QHBoxLayout()
         key_layout.addWidget(QLabel('API Key:'))
         self.api_key_edit = QLineEdit(self)
@@ -98,7 +100,9 @@ class ConfigWidget(QWidget):
             self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         except AttributeError:
             self.api_key_edit.setEchoMode(QLineEdit.Password)
-        self.api_key_edit.setText(prefs['api_key'])
+        self._api_keys = dict(prefs.get('api_keys', {}) or {})
+        current_provider = prefs['provider']
+        self.api_key_edit.setText(self._api_keys.get(current_provider, ''))
         self._update_api_key_placeholder()
         key_layout.addWidget(self.api_key_edit)
         self.show_key_btn = QPushButton('Show')
@@ -201,10 +205,13 @@ class ConfigWidget(QWidget):
         self.model_combo.blockSignals(False)
 
     def _on_provider_changed(self, index):
-        """Handle provider change - update model dropdown and API key placeholder."""
-        provider = self.provider_combo.itemData(index)
-        self._populate_models(provider)
+        """Handle provider change - update model dropdown, save current key, load new provider's key."""
+        self._api_keys[self._current_provider] = self.api_key_edit.text().strip()
+        new_provider = self.provider_combo.itemData(index)
+        self._current_provider = new_provider
+        self._populate_models(new_provider)
         self._update_api_key_placeholder()
+        self.api_key_edit.setText(self._api_keys.get(new_provider, ''))
 
     def _update_api_key_placeholder(self):
         """Update API key placeholder text based on selected provider."""
@@ -240,11 +247,13 @@ class ConfigWidget(QWidget):
         custom_column = self.col_edit.text().strip()
         if custom_column and not custom_column.startswith('#'):
             custom_column = '#%s' % custom_column.lstrip('#')
-        prefs['api_key']       = self.api_key_edit.text().strip()
-        prefs['provider']      = self.provider_combo.itemData(self.provider_combo.currentIndex())
-        prefs['model']         = self.model_combo.currentText()
+        current_provider = self.provider_combo.itemData(self.provider_combo.currentIndex())
+        self._api_keys[current_provider] = self.api_key_edit.text().strip()
+        prefs['api_keys'] = self._api_keys
+        prefs['provider'] = current_provider
+        prefs['model'] = self.model_combo.currentText()
         prefs['custom_column'] = custom_column
-        prefs['max_words']     = self.max_words_spin.value()
+        prefs['max_words'] = self.max_words_spin.value()
         prefs['max_input_words'] = self.max_input_words_spin.value()
-        prefs['batch_size']    = self.batch_size_spin.value()
-        prefs['prompt']        = self.prompt_edit.toPlainText()
+        prefs['batch_size'] = self.batch_size_spin.value()
+        prefs['prompt'] = self.prompt_edit.toPlainText()
