@@ -294,15 +294,15 @@ class SummarizerWorker(QThread):
         max_context = MODEL_CONTEXT_WINDOWS.get(self.model, 100000)
         effective_limit = int(max_context * self.CONTEXT_THRESHOLD_RATIO) - self.PROMPT_OVERHEAD_TOKENS
 
-        # Convert text to approximate tokens (rough estimate: 1 word ~= 1.3 tokens)
-        text_tokens = len(text.split()) * 1.3
+        # Convert text to approximate tokens (rough estimate: 1 word ~= 1.5 tokens)
+        text_tokens = len(text.split()) * 1.5
 
         if text_tokens <= effective_limit:
             return None
 
         # Need to split - calculate number of chunks
         words = text.split()
-        words_per_chunk = int(effective_limit / 1.3)  # Reverse the token estimate
+        words_per_chunk = int(effective_limit / 1.5)  # Reverse the token estimate
 
         # Ensure we have a reasonable chunk size
         if words_per_chunk < 1000:
