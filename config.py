@@ -38,7 +38,7 @@ prefs.defaults['prompt']        = (
 
 PROVIDER_MODELS = {
     'gemini': [
-        'gemini-3.1-flash',
+        'gemini-3-flash',
         'gemini-3.1-pro',
     ],
     'openai': [
@@ -46,9 +46,9 @@ PROVIDER_MODELS = {
         'gpt-5.4-mini',
     ],
     'anthropic': [
-        'claude-opus-4.7',
-        'claude-sonnet-4.6',
-        'claude-haiku-4.5',
+        'claude-opus-4-7',
+        'claude-sonnet-4-6',
+        'claude-haiku-4-5',
     ],
     'minimax': [
         'MiniMax-M2.7',

@@ -51,19 +51,19 @@ MODEL_CONTEXT_WINDOWS = {
     "gpt-5.4": 256000,
     "gpt-5.4-mini": 256000,
     # Anthropic
-    "claude-opus-4.7": 200000,
-    "claude-sonnet-4.6": 200000,
-    "claude-haiku-4.5": 200000,
+    "claude-opus-4-7": 200000,
+    "claude-sonnet-4-6": 200000,
+    "claude-haiku-4-5": 200000,
     # MiniMax
     "MiniMax-M2.7": 204800,
     # Gemini
-    "gemini-3.1-flash": 1048576,
+    "gemini-3-flash": 1048576,
     "gemini-3.1-pro": 1048576,
 }
 
 PROVIDER_MODELS = {
     Provider.GEMINI: [
-        "gemini-3.1-flash",
+        "gemini-3-flash",
         "gemini-3.1-pro",
     ],
     Provider.OPENAI: [
@@ -71,9 +71,9 @@ PROVIDER_MODELS = {
         "gpt-5.4-mini",
     ],
     Provider.ANTHROPIC: [
-        "claude-opus-4.7",
-        "claude-sonnet-4.6",
-        "claude-haiku-4.5",
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
     ],
     Provider.MINIMAX: [
         "MiniMax-M2.7",
