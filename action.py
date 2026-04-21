@@ -72,16 +72,16 @@ class AISummarizerAction(InterfaceAction):
                     'Please select one or more books to summarize.', show=True
                 )
 
-        provider = prefs['provider']
-        api_keys = prefs.get('api_keys', {})
-        api_key = api_keys.get(provider, '') if isinstance(api_keys, dict) else prefs.get('api_key', '')
-        if not api_key:
-            return error_dialog(
-                self.gui, 'No API Key',
-                f'Please set your {provider.title()} API key in\n'
-                'Preferences → Plugins → AI Book Summarizer → Customize plugin.',
-                show=True
-            )
+            provider = prefs['provider']
+            api_keys = prefs.get('api_keys', {})
+            api_key = api_keys.get(provider, '') if isinstance(api_keys, dict) else prefs.get('api_key', '')
+            if not api_key:
+                return error_dialog(
+                    self.gui, 'No API Key',
+                    f'Please set your {provider.title()} API key in\n'
+                    'Preferences → Plugins → AI Book Summarizer → Customize plugin.',
+                    show=True
+                )
 
             custom_col = (prefs['custom_column'] or '').strip()
             if not custom_col.startswith('#'):

@@ -6,11 +6,11 @@ Configuration widget for AI Book Summarizer plugin.
 try:
     from qt.core import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                          QLineEdit, QPushButton, QComboBox, QGroupBox,
-                         QTextEdit, QSpinBox)
+                         QTextEdit, QSpinBox, QSizePolicy)
 except ImportError:
     from PyQt5.Qt import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                           QLineEdit, QPushButton, QComboBox, QGroupBox,
-                          QTextEdit, QSpinBox)
+                          QTextEdit, QSpinBox, QSizePolicy)
 
 from calibre.utils.config import JSONConfig
 
@@ -70,6 +70,8 @@ class ConfigWidget(QWidget):
         self.l = QVBoxLayout()
         self.setLayout(self.l)
         self.setWindowTitle('AI Book Summarizer Configuration')
+        self.resize(1030, 620)
+        self.setMinimumSize(680, 560)
 
         # --- API Settings ---
         api_group = QGroupBox('AI API Settings')
@@ -100,6 +102,8 @@ class ConfigWidget(QWidget):
             self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         except AttributeError:
             self.api_key_edit.setEchoMode(QLineEdit.Password)
+        self.api_key_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.api_key_edit.setMaximumHeight(28)
         self._api_keys = dict(prefs.get('api_keys', {}) or {})
         current_provider = prefs['provider']
         self.api_key_edit.setText(self._api_keys.get(current_provider, ''))
@@ -115,6 +119,16 @@ class ConfigWidget(QWidget):
         model_layout = QHBoxLayout()
         model_layout.addWidget(QLabel('Model:'))
         self.model_combo = QComboBox(self)
+        try:
+            self.model_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        except Exception:
+            pass
+        max_model_len = max(len(m) for models in PROVIDER_MODELS.values() for m in models)
+        try:
+            self.model_combo.setMinimumContentsLength(max_model_len)
+        except Exception:
+            pass
+        self.model_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._populate_models(prefs['provider'])
         idx = self.model_combo.findText(prefs['model'])
         if idx >= 0:
@@ -185,7 +199,9 @@ class ConfigWidget(QWidget):
         ))
         self.prompt_edit = QTextEdit(self)
         self.prompt_edit.setPlainText(prefs['prompt'])
+        self.prompt_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.prompt_edit.setMinimumHeight(120)
+        self.prompt_edit.setMaximumHeight(160)
         prompt_layout.addWidget(self.prompt_edit)
 
         reset_btn = QPushButton('Reset to Default Prompt')
