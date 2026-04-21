@@ -193,7 +193,8 @@ class SummarizerWorker(QThread):
                     if self._cancelled:
                         break
                     completed += 1
-                    book_id, result = self._summarize_book(book_data)
+                    result = self._summarize_book(book_data)
+                    book_id = result['book_id']
                     if result['success']:
                         self.book_done.emit(book_id, result['summary'])
                     else:
