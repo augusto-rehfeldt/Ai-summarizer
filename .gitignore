@@ -1,0 +1,30 @@
+__pycache__/
+*.pyc
+AI Book Summarizer.zip
+*.zip.bak
+ai_summarizer.json
+
+# Workspace source snapshots: keep secrets and generated artifacts local.
+.env
+.env.*
+!.env.example
+api_key.txt
+*_key.txt
+*.local.json
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+cache/
+.cache/
+output/
+dist/
+build/
+*.log
+*.zip
+*.exe
+*.pdb
+*.tmp
+*.lock
