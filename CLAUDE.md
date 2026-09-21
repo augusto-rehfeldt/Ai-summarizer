@@ -31,10 +31,12 @@ result to a custom column (`#summary`). Text comes out of the book file itself
 - **A provider is a row in `providers.PROVIDERS`, not a code path.** Four request
   shapes exist (`style`): `openai` (`/chat/completions`), `anthropic` (`/messages`),
   `gemini` (`/models/{model}:generateContent`) and `cli` (no HTTP at all —
-  `providers.run_cli()` drives the Claude Code CLI). Adding a gateway means adding a
+  `providers.run_cli()` drives a coding CLI). Adding a gateway means adding a
   row; nothing in `jobs.py` should learn a provider's name. `jobs._call_api()` has the
   single `style == 'cli'` branch and `build_request()` raises for that style rather
-  than silently posting to `/chat/completions`.
+  than silently posting to `/chat/completions`. CLI invocation details (executable
+  candidates, flags, how the neutral system prompt gets in) live per provider in
+  `providers.CLI_SPECS`.
 - **A model id in a row goes stale and only fails at request time.** Verified live on
   2026-08-30: `gemini-3.1-pro` and `google/gemini-3.1-pro` are 404s — Google publishes
   `gemini-3.1-pro-preview` and `gemini-3.5-flash`, OpenRouter publishes
@@ -49,11 +51,20 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   spelling: gateways take `max_tokens`, OpenAI's own API wants
   `max_completion_tokens` and 400s on the older name.
 - **`needs_key: False` marks a provider that authenticates elsewhere** (`claude-cli`
-  on the user's subscription, `openai-oauth` through the local proxy). `action.py`
+  on the user's subscription, `command-code` on the Command Code plan, `openai-oauth`
+  through the local proxy). `action.py`
   checks `P.needs_key()` before refusing to run, and the config dialog says so instead
-  of nagging for a key that does not exist. `openai-oauth` needs the proxy already
-  listening on `127.0.0.1:10531` — the plugin does not start it (`npx openai-oauth`
-  does, from article-writer or book writer).
+  of nagging for a key that does not exist. `openai-oauth` talks to the local proxy on
+  `127.0.0.1:10531`; `providers.ensure_openai_oauth_proxy()` starts it when nothing is
+  listening (`npx --yes openai-oauth@latest --detach` — the same command book-writer's
+  AIService runs, so one proxy serves both), and `jobs._call_api()` plus the config
+  dialog's Check/Fetch buttons call it via the row's `proxy_start` flag.
+- **Command Code's executable must never be resolved as `cmd`**: on Windows that is
+  `cmd.exe`. `CLI_SPECS['command-code']['exe']` tries `cmdc`, `command-code`,
+  `commandcode`, in that order. `cmd -p` has no `--append-system-prompt`, so
+  `run_cli()` prepends the neutral instruction to the prompt instead; it also passes
+  `--skip-onboarding --no-skills --no-session` and maps Command Code's distinct exit
+  codes (3 auth, 5 rate limit, 10 credits) to readable errors.
 - **`claude -p` inherits every CLAUDE.md and plugin rule it can find**, and they end
   up in the summary: measured 2026-08-30, a summary came back written in a plugin's
   caveman register. `run_cli()` runs in `tempfile.gettempdir()` so no project file is
@@ -78,14 +89,23 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   `BROWSER_UA`. Without it `/models` returns 403 and `list_models()` silently falls back
   to the small static list.
 - **`list_models()` never raises**: a dead endpoint returns the static `models` list from
-  the provider row, so the config dialog always has something to show. The model combo is
+  the provider row, so the config dialog always has something to show. When the gateway
+  does answer, static entries it no longer publishes are merged back in (first seen
+  wins), and non-chat ids (`tts`, `whisper`, `dall-e`, `moderation`, `audio`, …) are
+  filtered out. The model combo is
   editable — gateways add models faster than this table does.
+- **`validate_key()` is the cheap "does this key work" check** behind the config
+  dialog's Check button: one GET on `/models` (never raises; 401/403 means a rejected
+  key, anything else is a warning). CLI providers report "no key needed" without any
+  network call.
 - **Context window drives chunking, not the request.** `_check_context_split_needed()`
   splits a book into chunk summaries plus a synthesis pass when the text passes 80% of
   the window. Unknown models fall back to `DEFAULT_CONTEXT_WINDOW` (100k), which
   over-chunks a 1M-token model — the config dialog's "Model context" spinbox overrides
   it, and gets filled automatically when the fetched list publishes one
-  (`context_length`/`limit.context`; OpenCode Zen publishes neither).
+  (`context_length`/`limit.context`; OpenCode Zen publishes neither). A row can carry
+  its own `model_contexts` map (the flat `MODEL_CONTEXT_WINDOWS` is keyed by bare id
+  and cannot tell Command Code's 1M `claude-sonnet-5` from the 200k one elsewhere).
 - **Reasoning models leak their thinking into `content`.** `clean_text()` strips
   `<think>`/`<thinking>` blocks, everything before a `SUMMARY:` label, and the usual
   "The user wants me to…" openers — applied to every provider, because gateways route

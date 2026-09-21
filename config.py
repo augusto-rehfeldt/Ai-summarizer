@@ -95,6 +95,10 @@ class ConfigWidget(QWidget):
         self.show_key_btn.setFixedWidth(50)
         self.show_key_btn.clicked.connect(self.toggle_key_visibility)
         key_layout.addWidget(self.show_key_btn)
+        self.check_key_btn = QPushButton('Check')
+        self.check_key_btn.setFixedWidth(50)
+        self.check_key_btn.clicked.connect(self.check_api_key)
+        key_layout.addWidget(self.check_key_btn)
         api_layout.addLayout(key_layout)
 
         self.key_hint = QLabel('')
@@ -222,7 +226,7 @@ class ConfigWidget(QWidget):
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         if models is None:
-            models = [(m, P.MODEL_CONTEXT_WINDOWS.get(m, 0)) for m in P.spec(provider)['models']]
+            models = P._row_models(P.spec(provider))
         self._model_contexts = {mid: ctx for mid, ctx in models if ctx}
         for model_id, _ctx in models:
             self.model_combo.addItem(model_id)
@@ -281,6 +285,8 @@ class ConfigWidget(QWidget):
         keys[provider] = self.api_key_edit.text().strip()
         key = P.resolve_key(provider, keys)
         base_url = self.base_url_edit.text().strip()
+        if not self._ensure_proxy():
+            return
         self.fetch_btn.setEnabled(False)
         self.fetch_btn.setText('Fetching…')
         try:
@@ -299,6 +305,36 @@ class ConfigWidget(QWidget):
                 pass
             self.fetch_btn.setText('Fetch models')
             self.fetch_btn.setEnabled(True)
+
+    def _ensure_proxy(self):
+        """openai-oauth needs its local proxy up before any request works."""
+        if not P.spec(self._current_provider).get('proxy_start'):
+            return True
+        self.key_hint.setText('<small>Starting the openai-oauth proxy '
+                              '(browser sign-in if needed)…</small>')
+        try:
+            QApplication.processEvents()  # paint the hint before the blocking call
+            P.ensure_openai_oauth_proxy()
+        except (RuntimeError, OSError) as e:
+            # OSError too: the npx shim can vanish between which() and run(),
+            # and an uncaught exception in a Qt slot aborts Calibre.
+            self.key_hint.setText('<small style="color:#b00020"><b>%s</b></small>' % e)
+            return False
+        return True
+
+    def check_api_key(self):
+        """Ask the gateway whether the key works, and say so in the hint."""
+        provider = self._current_provider
+        keys = dict(self._api_keys)
+        keys[provider] = self.api_key_edit.text().strip()
+        key = P.resolve_key(provider, keys)
+        if not self._ensure_proxy():
+            return
+        ok, msg = P.validate_key(provider, key, self.base_url_edit.text().strip())
+        if ok:
+            self.key_hint.setText('<small><b>%s</b></small>' % msg)
+        else:
+            self.key_hint.setText('<small style="color:#b00020"><b>%s</b></small>' % msg)
 
     def toggle_key_visibility(self):
         try:

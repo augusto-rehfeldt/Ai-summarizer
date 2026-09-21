@@ -43,16 +43,262 @@ def test_every_openai_call_carries_a_token_cap():
 
 
 def test_cli_provider_never_builds_an_http_request():
-    assert P.needs_key('claude-cli') is False
-    assert P.needs_key('hyper') is True
+    for cli_provider in ('claude-cli', 'command-code'):
+        assert P.needs_key(cli_provider) is False
+        try:
+            P.build_request(cli_provider, 'sonnet', 'hi', '')
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError('a cli provider must not fall through to /chat/completions')
+        # list_models() must not go near the network for it either.
+        assert [m for m, _ in P.list_models(cli_provider, '')] == P.spec(cli_provider)['models']
+
+
+def test_cli_command_resolution():
+    """claude gets a system-prompt flag; command-code never resolves to cmd.exe."""
+    saved_which = P.shutil.which
+    P.shutil.which = lambda name: '/fake/%s' % name if name == 'claude' else None
     try:
-        P.build_request('claude-cli', 'sonnet', 'hi', '')
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError('a cli provider must not fall through to /chat/completions')
-    # list_models() must not go near the network for it either.
-    assert [m for m, _ in P.list_models('claude-cli', '')] == P.spec('claude-cli')['models']
+        argv = P.cli_command('claude-cli', 'sonnet')
+        assert argv[0] == '/fake/claude', argv
+        assert argv[-2:] == ['--model', 'sonnet'], argv  # the flag itself is run_cli's job
+
+        # System32's cmd.exe is on PATH, but it is not the coding agent: with only
+        # 'cmd' answerable, command-code must fail loudly instead of running a shell.
+        # Fallback dirs are emptied so a real install on this machine can't answer.
+        P.shutil.which = lambda name: 'C:/WINDOWS/system32/cmd.exe' if name == 'cmd' else None
+        saved_dirs = P._cli_fallback_dirs
+        P._cli_fallback_dirs = lambda: []
+        try:
+            P.cli_command('command-code', 'claude-sonnet-5')
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("must never execute cmd.exe as 'Command Code'")
+        finally:
+            P._cli_fallback_dirs = saved_dirs
+
+        # A CLI invisible to which() is still found in a standard Node install dir.
+        import pathlib
+        fake_dir = pathlib.Path('/fake/nodejs')
+        P._cli_fallback_dirs = lambda: [fake_dir]
+        P._fake_cli_file = fake_dir / 'cmdc.cmd'
+        real_is_file = pathlib.Path.is_file
+        P._real_is_file = real_is_file
+        pathlib.Path.is_file = lambda self: True if self == P._fake_cli_file else real_is_file(self)
+        try:
+            argv = P.cli_command('command-code', 'claude-sonnet-5')
+            assert argv[0] == str(P._fake_cli_file), argv
+        finally:
+            pathlib.Path.is_file = real_is_file
+            P._cli_fallback_dirs = saved_dirs
+
+        P.shutil.which = lambda name: '/fake/%s' % name
+        argv = P.cli_command('command-code', 'claude-sonnet-5')
+        assert argv[0] == '/fake/cmdc', argv  # first candidate wins
+        assert '--append-system-prompt' not in argv, argv
+        assert '--skip-onboarding' in argv and '--no-session' in argv, argv
+    finally:
+        P.shutil.which = saved_which
+
+
+def test_cli_system_prompt_delivery():
+    """The neutral register reaches both CLIs, flag or no flag."""
+    saved_which = P.shutil.which
+    saved_run = P.subprocess.run
+    P.shutil.which = lambda name: '/fake/%s' % name
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured['argv'] = argv
+        captured['input'] = kwargs.get('input')
+
+        class Proc:
+            returncode = 0
+            stdout = 'A plain summary of the book.'
+            stderr = ''
+        return Proc()
+
+    P.subprocess.run = fake_run
+    try:
+        text, meta = P.run_cli('claude-cli', 'sonnet', 'book text')
+        assert 'A plain summary' in text and meta == {'finish_reason': 'stop'}
+        assert any(a == '--append-system-prompt' for a in captured['argv'])
+        assert captured['input'] == 'book text'
+
+        text, _ = P.run_cli('command-code', 'gpt-5.6-terra', 'book text')
+        # no flag: the instruction rides inside the prompt itself
+        assert captured['input'].startswith(P._CLI_SYSTEM) and captured['input'].endswith('book text')
+        assert '--append-system-prompt' not in captured['argv']
+    finally:
+        P.shutil.which = saved_which
+        P.subprocess.run = saved_run
+
+
+def test_cli_exit_codes_are_reported():
+    """A non-zero exit is an error with meaning, not a silent empty summary."""
+    saved_which = P.shutil.which
+    saved_run = P.subprocess.run
+    P.shutil.which = lambda name: '/fake/%s' % name
+
+    class Proc:
+        returncode = 10
+        stdout = ''
+        stderr = 'insufficient credits'
+
+    P.subprocess.run = lambda argv, **kwargs: Proc()
+    try:
+        try:
+            P.run_cli('command-code', 'gpt-5.6-terra', 'book text')
+        except RuntimeError as e:
+            assert 'credits' in str(e) and '10' in str(e), e
+        else:
+            raise AssertionError('exit 10 must raise')
+    finally:
+        P.shutil.which = saved_which
+        P.subprocess.run = saved_run
+
+
+def test_validate_key():
+    """Check button plumbing: CLI rows need no key; HTTP auth failures say so."""
+    ok, msg = P.validate_key('command-code', '')
+    assert ok and 'no key needed' in msg, msg
+
+    ok, msg = P.validate_key('hyper', '')
+    assert not ok and 'no API key' in msg, msg
+
+    saved_urlopen = P.urlrequest.urlopen
+
+    def fake_urlopen_401(req, timeout):
+        raise P.urlerror.HTTPError(req.full_url if hasattr(req, 'full_url') else 'http://x',
+                                   401, 'bad key', hdrs=None, fp=None)
+
+    P.urlrequest.urlopen = fake_urlopen_401
+    try:
+        ok, msg = P.validate_key('hyper', 'wrong')
+        assert not ok and '401' in msg, msg
+    finally:
+        P.urlrequest.urlopen = saved_urlopen
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"data": [{"id": "m1"}, {"id": "m2"}]}'
+
+    def fake_urlopen_ok(req, timeout):
+        return Resp()
+
+    P.urlrequest.urlopen = fake_urlopen_ok
+    try:
+        ok, msg = P.validate_key('hyper', 'good')
+        assert ok and '2' in msg, msg
+    finally:
+        P.urlrequest.urlopen = saved_urlopen
+
+
+def test_list_models_merges_static_and_filters_non_chat():
+    """A live answer keeps its context data but static entries are not dropped."""
+    saved_urlopen = P.urlrequest.urlopen
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return (b'{"data": [{"id": "brand-new-model", "context_length": 999000},'
+                    b' {"id": "tts-1"}, {"id": "text-embed-3"}]}')
+
+    P.urlrequest.urlopen = lambda req, timeout: Resp()
+    try:
+        models = dict(P.list_models('hyper', 'K'))
+        assert models.get('brand-new-model') == 999000, models
+        assert 'tts-1' not in models and 'text-embed-3' not in models, models
+        # static catalogue survives the merge
+        assert 'qwen3.8-flash' in models, models
+    finally:
+        P.urlrequest.urlopen = saved_urlopen
+
+
+def test_row_contexts_beat_the_flat_table():
+    assert P.context_window('claude-sonnet-5') == 200000
+    assert P.context_window('claude-sonnet-5', provider='command-code') == 1000000
+    assert P.context_window('who-knows', provider='command-code') == P.DEFAULT_CONTEXT_WINDOW
+    # The config dialog's static fallback uses this, so its auto-filled
+    # spinbox must agree with the row, not the flat table.
+    assert dict(P._row_models(P.spec('command-code')))['claude-sonnet-5'] == 1000000
+
+
+def test_validate_key_needs_key_rows_and_gemini_ua():
+    ok, msg = P.validate_key('openai-oauth', '')
+    assert ok and 'no key needed' in msg, msg
+    # gemini requests keep the browser UA like every other gateway call
+    _, headers = P._models_request('gemini', 'K')
+    assert headers.get('User-Agent') == P.BROWSER_UA, headers
+
+
+def test_openai_oauth_proxy_startup():
+    """A live proxy is never touched; a dead one is started via npx --detach."""
+    saved_which = P.shutil.which
+    saved_run = P.subprocess.run
+    saved_connect = P.socket.create_connection
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class Proc:
+        returncode = 0
+
+    state = {'up': True, 'argv': None}
+
+    def fake_connect(*a, **kw):
+        if state['up']:
+            return FakeConn()
+        raise OSError('nothing listening')
+
+    def fake_run(argv, **kwargs):
+        state['argv'] = argv
+        state['up'] = True
+        return Proc()
+
+    P.shutil.which = lambda name: '/fake/%s' % name
+    P.socket.create_connection = fake_connect
+    try:
+        # already listening: no npx call at all
+        P.ensure_openai_oauth_proxy()
+        assert state['argv'] is None
+
+        # dead port: spawn, then the port poll succeeds
+        state['up'] = False
+        P.subprocess.run = fake_run
+        P.ensure_openai_oauth_proxy()
+        assert state['argv'][:4] == ['/fake/npx.cmd', '--yes', 'openai-oauth@latest', '--detach'], state['argv']
+
+        # no npx on PATH: a clear error, not a crash
+        P.shutil.which = lambda name: None
+        state['up'] = False
+        try:
+            P.ensure_openai_oauth_proxy()
+        except RuntimeError as e:
+            assert 'npx' in str(e), e
+        else:
+            raise AssertionError('missing npx must raise')
+    finally:
+        P.shutil.which = saved_which
+        P.subprocess.run = saved_run
+        P.socket.create_connection = saved_connect
 
 
 def test_a_quota_notice_is_never_saved_as_a_summary():
@@ -165,6 +411,14 @@ def main():
             test_request_shapes()
             test_every_openai_call_carries_a_token_cap()
             test_cli_provider_never_builds_an_http_request()
+            test_cli_command_resolution()
+            test_cli_system_prompt_delivery()
+            test_cli_exit_codes_are_reported()
+            test_validate_key()
+            test_list_models_merges_static_and_filters_non_chat()
+            test_row_contexts_beat_the_flat_table()
+            test_validate_key_needs_key_rows_and_gemini_ua()
+            test_openai_oauth_proxy_startup()
             test_a_quota_notice_is_never_saved_as_a_summary()
             test_every_row_is_complete()
             test_parse_openai_strips_reasoning()

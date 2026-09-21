@@ -245,7 +245,7 @@ class SummarizerWorker(QThread):
 
         Returns None if no splitting needed, or a dict with 'chunks' list if splitting needed.
         """
-        max_context = P.context_window(self.model, self.model_context)
+        max_context = P.context_window(self.model, self.model_context, provider=self.provider)
         effective_limit = int(max_context * self.CONTEXT_THRESHOLD_RATIO) - self.PROMPT_OVERHEAD_TOKENS
 
         # Convert text to approximate tokens (rough estimate: 1 word ~= 1.5 tokens)
@@ -341,7 +341,9 @@ class SummarizerWorker(QThread):
     def _call_api(self, prompt):
         """One completion call against whichever provider is configured."""
         if P.spec(self.provider)['style'] == 'cli':
-            return P.run_cli(self.model, prompt)
+            return P.run_cli(self.provider, self.model, prompt)
+        if P.spec(self.provider).get('proxy_start'):
+            P.ensure_openai_oauth_proxy()
         endpoint, payload, headers, safe_endpoint = P.build_request(
             self.provider, self.model, prompt, self.api_key, self.base_url,
             # Anthropic needs an explicit cap; 2 tokens per requested word, floor 4096.
