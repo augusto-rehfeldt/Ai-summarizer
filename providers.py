@@ -201,13 +201,19 @@ PROVIDERS = {
     },
 }
 
-# Context windows in tokens for known models. Anything unlisted falls back to
+# Context windows in tokens for known models, verified against OpenRouter's
+# published context_length on 2026-09-22. Anything unlisted falls back to
 # DEFAULT_CONTEXT_WINDOW unless the config dialog stored a live value.
+# Bare claude ids stay at 200k: Anthropic's own API serves that without the
+# 1M beta header, and rows whose gateway serves more carry their own
+# model_contexts (command-code) or get live values from list_models().
 MODEL_CONTEXT_WINDOWS = {
-    'gpt-5.4': 256000,
-    'gpt-5.4-mini': 256000,
-    'gpt-5.4-nano': 256000,
-    'gpt-5.4-pro': 256000,
+    'gpt-5.4': 1050000,
+    'gpt-5.4-mini': 400000,
+    'gpt-5.4-nano': 400000,
+    'gpt-5.4-pro': 1050000,
+    'gpt-5.6-terra': 1050000,
+    'gpt-5.6-luna': 1050000,
     'claude-opus-5': 200000,
     'claude-sonnet-5': 200000,
     'claude-fable-5': 200000,
@@ -217,21 +223,32 @@ MODEL_CONTEXT_WINDOWS = {
     'sonnet': 200000,
     'haiku': 200000,
     'MiniMax-M2.7': 204800,
-    'MiniMax-M3': 204800,
-    'minimax-m3': 204800,
+    'MiniMax-M2.7-highspeed': 204800,
+    'MiniMax-M2.5': 204800,
+    'MiniMax-M3': 1048576,
+    'minimax-m3': 1048576,
+    'kimi-k3': 1048576,
+    'deepseek-v4-pro': 1048576,
+    'deepseek-v4-pro-0813': 1048576,
+    'deepseek-v4-flash': 1048576,
+    'deepseek-v4-flash-0731': 1310720,
+    'glm-5.2': 1048576,
+    'glm-5.3': 1310720,
+    'glm-5.3-flash': 1310720,
     'gemini-3-flash-preview': 1048576,
     'gemini-3.5-flash': 1048576,
     'gemini-3.5-flash-lite': 1048576,
     'gemini-3.7-flash': 1048576,
     'gemini-3.1-pro-preview': 1048576,
     'gemini-3.1-pro': 1048576,
-    'qwen3.8-flash': 262144,
-    'glm-5.3-flash': 262144,
-    'qwen3.8-max': 262144,
-    'qwen3.7-max': 262144,
-    'kimi-k3': 262144,
-    'grok-4.5': 256000,
-    'grok-4.6': 256000,
+    'qwen3.8-flash': 1000000,
+    'qwen3.8-max': 1000000,
+    'qwen3.7-max': 1000000,
+    'grok-4.6': 500000,
+    'grok-4.5': 500000,
+    'grok-4-fast': 2000000,
+    'grok-4': 256000,
+    'grok-3': 131072,
 }
 
 DEFAULT_CONTEXT_WINDOW = 100000

@@ -393,7 +393,11 @@ def test_key_resolution_order(tmp_home):
 
 
 def test_context_window():
-    assert P.context_window('gpt-5.4') == 256000
+    """Windows track the model, not the provider row: openai-oauth serves the
+    same gpt-5.6-terra at 1.05M that command-code does, never the 100k default."""
+    assert P.context_window('gpt-5.4') == 1050000
+    assert P.context_window('gpt-5.6-terra') == 1050000
+    assert P.context_window('gpt-5.6-terra', provider='openai-oauth') == 1050000
     assert P.context_window('who-knows') == P.DEFAULT_CONTEXT_WINDOW
     assert P.context_window('gpt-5.4', override=8000) == 8000  # the calibration knob wins
 

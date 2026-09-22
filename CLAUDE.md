@@ -103,7 +103,11 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   the window. Unknown models fall back to `DEFAULT_CONTEXT_WINDOW` (100k), which
   over-chunks a 1M-token model — the config dialog's "Model context" spinbox overrides
   it, and gets filled automatically when the fetched list publishes one
-  (`context_length`/`limit.context`; OpenCode Zen publishes neither). A row can carry
+  (`context_length`/`limit.context`; OpenCode Zen publishes neither). The flat table
+  was re-verified against OpenRouter's published `context_length` on 2026-09-22:
+  `gpt-5.6-terra`/`gpt-5.6-luna`, the `deepseek-v4` family and `glm-5.2`/`glm-5.3`
+  had been missing entirely (so openai-oauth chunked terra at 100k), and
+  gpt-5.4/minimax/kimi/qwen/grok windows were stale. A row can carry
   its own `model_contexts` map (the flat `MODEL_CONTEXT_WINDOWS` is keyed by bare id
   and cannot tell Command Code's 1M `claude-sonnet-5` from the 200k one elsewhere).
 - **Reasoning models leak their thinking into `content`.** `clean_text()` strips
