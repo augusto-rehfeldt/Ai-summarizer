@@ -46,10 +46,20 @@ PROVIDERS = {
         'base_url': 'https://hyper.charm.land/v1',
         'key_envs': ['HYPER_API_KEY', 'AW_API_KEY'],
         'crush_provider': 'hyper',
-        'models': ['qwen3.8-flash', 'qwen3.8-max', 'qwen3.7-max', 'deepseek-v4-pro-0813',
-                   'deepseek-v4-flash-0731', 'glm-5.2', 'glm-5.3-flash', 'kimi-k3',
-                   'minimax-m3'],
+        'models': ['qwen3.8-flash', 'qwen3.8-max', 'qwen3.8-27b', 'qwen3.7-max',
+                   'deepseek-v4-pro', 'deepseek-v4-pro-0813', 'deepseek-v4-flash',
+                   'deepseek-v4-flash-0731', 'deepseek-v4.1-flash', 'glm-5.2',
+                   'glm-5.3', 'glm-5.3-flash', 'kimi-k3', 'kimi-k2.7-code',
+                   'minimax-m3', 'gpt-oss-120b'],
         'default_model': 'qwen3.8-flash',
+        # Hyper caps some families below the model's native window; measured
+        # from its /models on 2026-09-22.
+        'model_contexts': {
+            'minimax-m3': 512000,
+            'glm-5.2': 1000000,
+            'glm-5.3': 1000000,
+            'deepseek-v4-flash-0731': 1000000,
+        },
     },
     'opencode': {
         'label': 'OpenCode Zen',
@@ -58,9 +68,10 @@ PROVIDERS = {
         'key_envs': ['OPENCODE_API_KEY', 'OPENCODE_ZEN_API_KEY'],
         'opencode_auth': ['opencode-zen', 'opencode'],
         'crush_provider': 'opencode-zen',
-        'models': ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5', 'gpt-5.6-terra',
-                   'gpt-5.4', 'gemini-3.1-pro', 'kimi-k3', 'minimax-m3', 'glm-5.2',
-                   'big-pickle'],
+        'models': ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5',
+                   'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.4',
+                   'gemini-3.1-pro', 'gemini-3.8-flash', 'grok-4.7', 'kimi-k3',
+                   'minimax-m3', 'glm-5.2', 'big-pickle'],
         'default_model': 'claude-sonnet-5',
     },
     'opencode-go': {
@@ -70,9 +81,10 @@ PROVIDERS = {
         'key_envs': ['OPENCODE_GO_API_KEY'],
         'opencode_auth': ['opencode-go'],
         'crush_provider': 'opencode-go',
-        'models': ['qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'glm-5.3', 'glm-5.2',
-                   'kimi-k3', 'minimax-m3', 'deepseek-v4-pro', 'deepseek-v4-flash',
-                   'grok-4.6', 'gpt-5.6-luna'],
+        'models': ['qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus',
+                   'glm-5.3', 'glm-5.2', 'kimi-k3', 'minimax-m3',
+                   'deepseek-v4-pro', 'deepseek-v4-flash', 'grok-4.6', 'grok-4.7',
+                   'gpt-5.6-luna'],
         'default_model': 'qwen3.8-max',
     },
     'openrouter': {
@@ -81,9 +93,12 @@ PROVIDERS = {
         'base_url': 'https://openrouter.ai/api/v1',
         'key_envs': ['OPENROUTER_API_KEY'],
         'opencode_auth': ['openrouter'],
-        'models': ['anthropic/claude-sonnet-5', 'anthropic/claude-opus-5', 'openai/gpt-5.4',
-                   'openai/gpt-5.4-mini', 'google/gemini-3.1-pro-preview',
-                   'moonshotai/kimi-k3', 'minimax/minimax-m3'],
+        'models': ['anthropic/claude-sonnet-5', 'anthropic/claude-opus-5',
+                   'openai/gpt-5.4', 'openai/gpt-5.4-mini', 'openai/gpt-5.6-terra',
+                   'openai/gpt-5.6-luna', 'google/gemini-3.1-pro-preview',
+                   'google/gemini-3.5-flash', 'moonshotai/kimi-k3',
+                   'minimax/minimax-m3', 'deepseek/deepseek-v4-pro',
+                   'x-ai/grok-4.6', 'z-ai/glm-5.3'],
         'default_model': 'anthropic/claude-sonnet-5',
     },
     'anthropic': {
@@ -148,7 +163,8 @@ PROVIDERS = {
         'key_envs': ['OPENAI_API_KEY'],
         'opencode_auth': ['openai'],
         'token_param': 'max_completion_tokens',
-        'models': ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.4-pro'],
+        'models': ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.5',
+                   'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.4-pro'],
         'default_model': 'gpt-5.4',
     },
     'openai-oauth': {
@@ -160,7 +176,8 @@ PROVIDERS = {
         # Nothing listens on the proxy port until some npx CLI starts it; the
         # plugin starts it itself instead of requiring book-writer to be open.
         'proxy_start': True,
-        'models': ['gpt-5.6-terra', 'gpt-5.4', 'gpt-5.4-mini'],
+        'models': ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra',
+                   'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
         'default_model': 'gpt-5.6-terra',
     },
     'gemini': {
@@ -169,7 +186,8 @@ PROVIDERS = {
         'base_url': 'https://generativelanguage.googleapis.com/v1beta',
         'key_envs': ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
         'opencode_auth': ['google'],
-        'models': ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-3.7-flash',
+        'models': ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-3.6-flash',
+                   'gemini-3.7-flash', 'gemini-3.1-pro-preview',
                    'gemini-3-flash-preview', 'gemini-3.5-flash-lite'],
         'default_model': 'gemini-3.5-flash',
     },
@@ -178,7 +196,7 @@ PROVIDERS = {
         'style': 'openai',
         'base_url': 'https://api.x.ai/v1',
         'key_envs': ['XAI_API_KEY', 'GROK_API_KEY'],
-        'models': ['grok-4.6', 'grok-4.5', 'grok-4-fast', 'grok-4', 'grok-3'],
+        'models': ['grok-4.6', 'grok-4.7', 'grok-4.5', 'grok-4-fast', 'grok-4', 'grok-3'],
         'default_model': 'grok-4.6',
     },
     'groq': {
@@ -196,7 +214,8 @@ PROVIDERS = {
         'base_url': 'https://api.minimax.io/v1',
         'key_envs': ['MINIMAX_API_KEY'],
         'opencode_auth': ['minimax-coding-plan'],
-        'models': ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5'],
+        'models': ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed',
+                   'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'],
         'default_model': 'MiniMax-M3',
     },
 }
@@ -214,6 +233,18 @@ MODEL_CONTEXT_WINDOWS = {
     'gpt-5.4-pro': 1050000,
     'gpt-5.6-terra': 1050000,
     'gpt-5.6-luna': 1050000,
+    'gpt-5.6-sol': 1050000,
+    'gpt-5.5': 1050000,
+    'gpt-6-astra': 1050000,
+    'kimi-k2.7-code': 262144,
+    'deepseek-v4.1-flash': 1048576,
+    'gpt-oss-120b': 131072,
+    'grok-4.7': 500000,
+    'MiniMax-M2.5-highspeed': 204800,
+    'qwen3.7-plus': 1000000,
+    'qwen3.8-27b': 1000000,
+    'gemini-3.6-flash': 1048576,
+    'gemini-3.8-flash': 1048576,
     'claude-opus-5': 200000,
     'claude-sonnet-5': 200000,
     'claude-fable-5': 200000,
@@ -426,6 +457,15 @@ def _model_id_is_serving(model_id):
     return not any(bad in lower for bad in _NON_CHAT)
 
 
+def _int_or_0(value):
+    """Gateways occasionally publish a context as a string; one bad entry
+    must not discard the whole live list."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _row_models(cfg):
     """The static catalogue of a provider row, with the best context guess."""
     contexts = cfg.get('model_contexts') or {}
@@ -466,26 +506,28 @@ def list_models(provider, api_key, base_url=''):
         req = urlrequest.Request(url, headers=headers, method='GET')
         with urlrequest.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             data = json.loads(resp.read().decode('utf-8', errors='replace'))
-    except Exception:
-        return _row_models(cfg)
 
-    models = []
-    if style == 'gemini':
-        for item in data.get('models') or []:
-            name = str(item.get('name') or '').split('/')[-1]
-            if name and _model_id_is_serving(name):
-                models.append((name, int(item.get('inputTokenLimit') or 0)))
-    else:
-        for item in data.get('data') or []:
-            if not isinstance(item, dict) or not item.get('id'):
-                continue
-            model_id = str(item['id'])
-            if not _model_id_is_serving(model_id):
-                continue
-            ctx = item.get('context_length') or item.get('context_window') or 0
-            limits = item.get('limit') if isinstance(item.get('limit'), dict) else {}
-            ctx = ctx or limits.get('context') or 0
-            models.append((model_id, int(ctx or 0)))
+        models = []
+        if style == 'gemini':
+            for item in data.get('models') or []:
+                name = str(item.get('name') or '').split('/')[-1]
+                if name and _model_id_is_serving(name):
+                    models.append((name, _int_or_0(item.get('inputTokenLimit'))))
+        else:
+            for item in data.get('data') or []:
+                if not isinstance(item, dict) or not item.get('id'):
+                    continue
+                model_id = str(item['id'])
+                if not _model_id_is_serving(model_id):
+                    continue
+                ctx = item.get('context_length') or item.get('context_window') or 0
+                limits = item.get('limit') if isinstance(item.get('limit'), dict) else {}
+                ctx = ctx or limits.get('context') or 0
+                models.append((model_id, _int_or_0(ctx)))
+    except Exception:
+        # Covers a dead endpoint and a reachable-but-malformed body alike:
+        # this function is a config-dialog helper and must never raise.
+        return _row_models(cfg)
 
     if not models:
         return _row_models(cfg)

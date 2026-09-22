@@ -160,6 +160,31 @@ def test_cli_exit_codes_are_reported():
         P.subprocess.run = saved_run
 
 
+def test_list_models_survives_a_malformed_body():
+    """A reachable-but-junk answer falls back to the static row, never raises —
+    an uncaught exception here aborts Calibre from inside a Qt slot."""
+    saved_urlopen = P.urlrequest.urlopen
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    Resp.read = lambda self: b'null'
+    P.urlrequest.urlopen = lambda req, timeout: Resp()
+    try:
+        assert [m for m, _ in P.list_models('hyper', 'K')] == P.spec('hyper')['models']
+
+        Resp.read = lambda self: (b'{"data": [{"id": "weird", "context_length": "200k"},'
+                                  b' {"id": "good", "context_length": 123}]}')
+        models = dict(P.list_models('hyper', 'K'))
+        assert models.get('weird') == 0 and models.get('good') == 123, models
+    finally:
+        P.urlrequest.urlopen = saved_urlopen
+
+
 def test_validate_key():
     """Check button plumbing: CLI rows need no key; HTTP auth failures say so."""
     ok, msg = P.validate_key('command-code', '')
@@ -420,6 +445,7 @@ def main():
             test_cli_exit_codes_are_reported()
             test_validate_key()
             test_list_models_merges_static_and_filters_non_chat()
+            test_list_models_survives_a_malformed_body()
             test_row_contexts_beat_the_flat_table()
             test_validate_key_needs_key_rows_and_gemini_ua()
             test_openai_oauth_proxy_startup()

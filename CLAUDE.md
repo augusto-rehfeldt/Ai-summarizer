@@ -93,7 +93,20 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   does answer, static entries it no longer publishes are merged back in (first seen
   wins), and non-chat ids (`tts`, `whisper`, `dall-e`, `moderation`, `audio`, …) are
   filtered out. The model combo is
-  editable — gateways add models faster than this table does.
+  editable — gateways add models faster than this table does. The dialog fetches
+  automatically when it opens and when the provider changes (`fetch_models(auto=True)`),
+  but the auto pass skips what would only hang or surprise: CLI rows, starting the
+  openai-oauth proxy (that can open a browser sign-in), and providers with no
+  resolvable key.
+- **Static `models` lists were re-checked against each live API on 2026-09-22**
+  (hyper, OpenCode Zen, OpenCode Go, OpenRouter, gemini, minimax with resolvable
+  keys; openai-oauth against the running proxy; openai/grok additions corroborated
+  by OpenRouter's catalog since no key resolved locally). Dead ids were dropped,
+  current ones added. Hyper caps some families below the model's native window, so
+  its row carries its own `model_contexts` (e.g. `minimax-m3` 512k, `glm-5.2` 1M).
+  The openrouter and groq rows deliberately stay vendor-prefixed and window-less:
+  their live `/models` publishes `context_length`, so the auto-fetch fills them
+  in (OpenRouter's is even public — no key needed).
 - **`validate_key()` is the cheap "does this key work" check** behind the config
   dialog's Check button: one GET on `/models` (never raises; 401/403 means a rejected
   key, anything else is a warning). CLI providers report "no key needed" without any

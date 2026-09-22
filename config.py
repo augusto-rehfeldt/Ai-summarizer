@@ -6,11 +6,13 @@ Configuration widget for AI Book Summarizer plugin.
 try:
     from qt.core import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                          QLineEdit, QPushButton, QComboBox, QGroupBox,
-                         QTextEdit, QSpinBox, QSizePolicy, QApplication, Qt)
+                         QTextEdit, QSpinBox, QSizePolicy, QApplication, Qt,
+                         QTimer)
 except ImportError:
     from PyQt5.Qt import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                           QLineEdit, QPushButton, QComboBox, QGroupBox,
-                          QTextEdit, QSpinBox, QSizePolicy, QApplication, Qt)
+                          QTextEdit, QSpinBox, QSizePolicy, QApplication, Qt,
+                          QTimer)
 
 from calibre.utils.config import JSONConfig
 
@@ -218,6 +220,9 @@ class ConfigWidget(QWidget):
         self.l.addWidget(prompt_group)
         self.l.addStretch()
 
+        # The saved provider's live list arrives once the dialog is painted.
+        QTimer.singleShot(0, lambda: self.fetch_models(auto=True))
+
     # ─── provider/model plumbing ─────────────
 
     def _populate_models(self, provider, models=None):
@@ -245,6 +250,7 @@ class ConfigWidget(QWidget):
         self._populate_models(new_provider)
         self.model_context_spin.setValue(0)
         self._update_provider_hints()
+        self.fetch_models(auto=True)
 
     def _on_model_changed(self, text):
         """A model fetched with a known context window fills the spinbox for you."""
@@ -278,12 +284,30 @@ class ConfigWidget(QWidget):
                 '<small>No key found automatically — paste one above or set %s.</small>' % envs
             )
 
-    def fetch_models(self):
-        """Ask the gateway which models it serves right now."""
+    def fetch_models(self, auto=False):
+        """Ask the gateway which models it serves right now.
+
+        auto=True is the quiet version that runs on dialog load and provider
+        selection: it skips anything that would only hang the dialog or
+        surprise the user (CLI rows have no endpoint, starting the
+        openai-oauth proxy can open a browser sign-in, and without a key the
+        gateway can only repeat the static list anyway).
+        """
         provider = self._current_provider
+        cfg = P.spec(provider)
         keys = dict(self._api_keys)
         keys[provider] = self.api_key_edit.text().strip()
         key = P.resolve_key(provider, keys)
+        if auto:
+            if cfg['style'] == 'cli':
+                return
+            if cfg.get('proxy_start') and not P.openai_oauth_proxy_running():
+                self.key_hint.setText(
+                    '<small>Press "Fetch models" to start the openai-oauth '
+                    'proxy (sign-in may be needed) and list its models.</small>')
+                return
+            if not key and cfg.get('needs_key', True):
+                return
         base_url = self.base_url_edit.text().strip()
         if not self._ensure_proxy():
             return
