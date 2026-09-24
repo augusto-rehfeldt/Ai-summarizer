@@ -156,4 +156,4 @@ This ensures comprehensive coverage even for very long books.
 
 ## License
 
-Apache
+Released into the public domain under [CC0 1.0](LICENSE).
