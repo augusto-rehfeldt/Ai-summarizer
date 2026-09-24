@@ -124,9 +124,9 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   its own `model_contexts` map (the flat `MODEL_CONTEXT_WINDOWS` is keyed by bare id
   and cannot tell Command Code's 1M `claude-sonnet-5` from the 200k one elsewhere).
 - **Reasoning models leak their thinking into `content`.** `clean_text()` strips
-  `<think>`/`<thinking>` blocks, everything before a `SUMMARY:` label, and the usual
-  "The user wants me to…" openers — applied to every provider, because gateways route
-  to whatever model they like.
+  explicit `<think>`/`<thinking>` blocks and a leading `SUMMARY:` label only.
+  Ordinary prose prefixes and in-body `SUMMARY:` text are preserved. Cleanup applies
+  to every provider, because gateways route to whatever model they like.
 - **Anthropic requires `max_tokens`**; it is derived from the configured summary length
   (`max_words * 2`, floor 4096). The old hardcoded 2048 truncated any summary over
   ~1000 words.

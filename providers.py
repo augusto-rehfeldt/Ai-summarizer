@@ -747,20 +747,11 @@ def run_cli(provider, model, prompt, timeout=CLI_TIMEOUT_SECONDS):
     return out, {'finish_reason': 'stop'}
 
 
-_PREAMBLE = re.compile(
-    r"^\s*(The user wants me to|I need to summarize|Let me summarize|"
-    r"This book describes|I'll summarize|Based on the text)",
-    re.IGNORECASE,
-)
-
-
 def clean_text(text):
     """Strip leaked reasoning: gateways route to thinking models (MiniMax, GLM, Qwen)."""
     text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    if 'SUMMARY:' in text:
-        text = text.split('SUMMARY:', 1)[1]
-    return _PREAMBLE.sub('', text).strip()
+    return re.sub(r'^\s*SUMMARY:\s*', '', text).strip()
 
 
 def _blocks_to_text(content):

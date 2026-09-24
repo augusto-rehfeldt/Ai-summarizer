@@ -347,6 +347,28 @@ def test_parse_openai_strips_reasoning():
     assert meta['finish_reason'] == 'stop'
 
 
+def test_parse_preserves_prose_and_strips_only_explicit_reasoning():
+    cases = [
+        ('This book describes a family rebuilding after a storm.',
+         'This book describes a family rebuilding after a storm.'),
+        ('Based on the text, the narrator is unreliable.',
+         'Based on the text, the narrator is unreliable.'),
+        ('The appendix includes SUMMARY: a record of the voyage.',
+         'The appendix includes SUMMARY: a record of the voyage.'),
+        (' \n<think>private\nreasoning</think><thinking>more reasoning</thinking>\n'
+         ' SUMMARY: A book.', 'A book.'),
+    ]
+    for raw, expected in cases:
+        bodies = {
+            'hyper': {'choices': [{'message': {'content': raw}}]},
+            'anthropic': {'content': [{'type': 'text', 'text': raw}]},
+            'gemini': {'candidates': [{'content': {'parts': [{'text': raw}]}}]},
+        }
+        for provider, body in bodies.items():
+            text, _ = P.parse_response(body, provider)
+            assert text == expected, (provider, raw, text)
+
+
 def test_parse_openai_block_list():
     body = {'choices': [{'message': {'content': [
         {'type': 'thinking', 'thinking': 'hmm'},
@@ -452,6 +474,7 @@ def main():
             test_a_quota_notice_is_never_saved_as_a_summary()
             test_every_row_is_complete()
             test_parse_openai_strips_reasoning()
+            test_parse_preserves_prose_and_strips_only_explicit_reasoning()
             test_parse_openai_block_list()
             test_parse_anthropic_joins_all_text_blocks()
             test_parse_gemini_and_errors()
