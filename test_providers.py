@@ -449,6 +449,41 @@ def test_context_window():
     assert P.context_window('gpt-5.4', override=8000) == 8000  # the calibration knob wins
 
 
+def test_empty_reply_is_retried_with_a_bigger_cap():
+    """A reasoning model that spends the cap thinking answers empty with finish_reason=length."""
+    import types
+    stub = types.ModuleType('PyQt5.Qt')
+    for n in ('QDialog', 'QVBoxLayout', 'QHBoxLayout', 'QLabel', 'QPushButton',
+              'QProgressBar', 'QTextEdit', 'QThread'):
+        setattr(stub, n, object)
+    stub.pyqtSignal = lambda *a: None
+    sys.modules.setdefault('PyQt5', types.ModuleType('PyQt5'))
+    sys.modules['PyQt5.Qt'] = stub
+    import jobs
+
+    w = object.__new__(jobs.SummarizerWorker)
+    w.max_words, w.provider, w.provider_label, w._cancelled = 500, 'hyper', 'Hyper', False
+    w.progress = types.SimpleNamespace(emit=lambda *a: None)
+    w._sleep_with_cancel = lambda s: True
+    caps = []
+    def call(prompt, max_tokens):
+        caps.append(max_tokens)
+        return ('done', {}) if len(caps) == 3 else ('', {'finish_reason': 'length'})
+    w._call_api = call
+    assert w._call_api_with_retries('p', 0) == ('done', {})
+    assert caps == [4096, 8192, 16384], caps
+
+    caps.clear()
+    w._call_api = lambda p, m: (caps.append(m), ('', {}))[1]
+    try:
+        w._call_api_with_retries('p', 0)
+    except RuntimeError as e:
+        assert 'empty response' in str(e), e
+    else:
+        raise AssertionError('always-empty replies must fail')
+    assert len(caps) == jobs.SummarizerWorker.MAX_RETRIES + 1 == 5, caps
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
@@ -480,6 +515,7 @@ def main():
             test_parse_gemini_and_errors()
             test_key_resolution_order(home)
             test_context_window()
+            test_empty_reply_is_retried_with_a_bigger_cap()
         finally:
             P.Path.home = saved_home
             for key, val in saved_env.items():

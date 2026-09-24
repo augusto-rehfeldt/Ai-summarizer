@@ -127,6 +127,10 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   explicit `<think>`/`<thinking>` blocks and a leading `SUMMARY:` label only.
   Ordinary prose prefixes and in-body `SUMMARY:` text are preserved. Cleanup applies
   to every provider, because gateways route to whatever model they like.
+- **An empty reply is retried, not saved.** `_call_api_with_retries()` makes 5 attempts
+  (as book-writer's AIService) with AIService's short backoff, not the 61s rate-limit floor.
+  `finish_reason` `length` with no text means a reasoning model spent the whole cap
+  thinking (seen 2026-09-24 on Zen `space-bunny-free`), so each such retry doubles the cap.
 - **Anthropic requires `max_tokens`**; it is derived from the configured summary length
   (`max_words * 2`, floor 4096). The old hardcoded 2048 truncated any summary over
   ~1000 words.

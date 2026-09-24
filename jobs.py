@@ -36,15 +36,20 @@ except ImportError:
 # ─────────────────────────────────────────────
 
 class RetryableAPIError(RuntimeError):
-    def __init__(self, message, retry_after_seconds=None, provider=None):
+    def __init__(self, message, retry_after_seconds=None, provider=None, rate_limited=True):
         RuntimeError.__init__(self, message)
         self.retry_after_seconds = retry_after_seconds
         self.provider = provider or "unknown"
+        # False for an empty reply: no quota to wait out, so skip the 61s floor.
+        self.rate_limited = rate_limited
 
 
 class SummarizerWorker(QThread):
     """Worker thread that calls AI APIs for each book."""
-    MAX_RETRIES = 3
+    MAX_RETRIES = 4  # 5 attempts, as book writer's AIService
+    EMPTY_RETRY_DELAYS = (3, 8, 20, 45)  # AIService's backoff for empty replies
+    # A reasoning model can spend the whole cap thinking and answer nothing.
+    TRUNCATED_FINISH_REASONS = {'length', 'max_tokens', 'MAX_TOKENS'}
     MIN_RETRY_DELAY_SECONDS = 61.0
     DEFAULT_RETRY_DELAY_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 180
@@ -276,12 +281,26 @@ class SummarizerWorker(QThread):
 
     def _call_api_with_retries(self, prompt, idx):
         total_attempts = self.MAX_RETRIES + 1
+        # Anthropic needs an explicit cap; 2 tokens per requested word, floor 4096.
+        max_tokens = max(4096, int(self.max_words) * 2)
         attempt = 1
         while True:
             try:
                 if attempt > 1:
                     self.progress.emit(idx, f'    - Retry attempt: {attempt}/{total_attempts}')
-                return self._call_api(prompt)
+                summary, api_meta = self._call_api(prompt, max_tokens)
+                if summary:
+                    return summary, api_meta
+                finish_reason = api_meta.get('finish_reason')
+                if finish_reason in self.TRUNCATED_FINISH_REASONS:
+                    max_tokens *= 2
+                    self.progress.emit(idx, f'    - Empty reply hit the token cap; raising it to {max_tokens}')
+                raise RetryableAPIError(
+                    f'{self.provider_label} returned an empty response (finish_reason={finish_reason})',
+                    retry_after_seconds=self.EMPTY_RETRY_DELAYS[min(attempt, len(self.EMPTY_RETRY_DELAYS)) - 1],
+                    provider=self.provider,
+                    rate_limited=False,
+                )
             except RetryableAPIError as e:
                 if attempt > self.MAX_RETRIES:
                     raise RuntimeError(
@@ -291,7 +310,8 @@ class SummarizerWorker(QThread):
                 wait_seconds = e.retry_after_seconds
                 if wait_seconds is None:
                     wait_seconds = self.DEFAULT_RETRY_DELAY_SECONDS * attempt
-                wait_seconds = max(self.MIN_RETRY_DELAY_SECONDS, float(wait_seconds))
+                if e.rate_limited:
+                    wait_seconds = max(self.MIN_RETRY_DELAY_SECONDS, float(wait_seconds))
                 self.progress.emit(
                     idx,
                     f'    - Retryable error: {e}. Waiting {wait_seconds:.1f}s before retry {attempt + 1}/{total_attempts}.'
@@ -338,7 +358,7 @@ class SummarizerWorker(QThread):
                 return None
         return None
 
-    def _call_api(self, prompt):
+    def _call_api(self, prompt, max_tokens):
         """One completion call against whichever provider is configured."""
         if P.spec(self.provider)['style'] == 'cli':
             return P.run_cli(self.provider, self.model, prompt)
@@ -346,8 +366,7 @@ class SummarizerWorker(QThread):
             P.ensure_openai_oauth_proxy()
         endpoint, payload, headers, safe_endpoint = P.build_request(
             self.provider, self.model, prompt, self.api_key, self.base_url,
-            # Anthropic needs an explicit cap; 2 tokens per requested word, floor 4096.
-            max_tokens=max(4096, int(self.max_words) * 2),
+            max_tokens=max_tokens,
         )
         return self._do_api_request(endpoint, payload, headers, safe_endpoint=safe_endpoint)
 
