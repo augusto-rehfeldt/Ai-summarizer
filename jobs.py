@@ -2,7 +2,7 @@
 """
 Background job handling for the AI Book Summarizer plugin.
 Handles book text extraction, API calls, and saving results.
-Supports multiple AI providers: Gemini, OpenAI, Anthropic, MiniMax.
+Providers (base URLs, keys, model lists, response shapes) live in providers.py.
 """
 
 import os
@@ -12,17 +12,14 @@ import subprocess
 import time
 import re
 import socket
-from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib import request as urlrequest
 from urllib import error as urlerror
 
 try:
-    from openai import OpenAI as _OpenAIClient
-    _HAS_OPENAI_CLIENT = True
-except ImportError:
-    _OpenAIClient = None
-    _HAS_OPENAI_CLIENT = False
+    from calibre_plugins.ai_summarizer import providers as P
+except ImportError:  # running outside Calibre
+    import providers as P
 
 try:
     from qt.core import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -35,66 +32,24 @@ except ImportError:
 
 
 # ─────────────────────────────────────────────
-# Provider and model definitions
-# ─────────────────────────────────────────────
-
-class Provider(Enum):
-    GEMINI = "gemini"
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    MINIMAX = "minimax"
-
-
-# Context windows in tokens for known models
-MODEL_CONTEXT_WINDOWS = {
-    # OpenAI
-    "gpt-5.4": 256000,
-    "gpt-5.4-mini": 256000,
-    # Anthropic
-    "claude-opus-4-7": 200000,
-    "claude-sonnet-4-6": 200000,
-    "claude-haiku-4-5": 200000,
-    # MiniMax
-    "MiniMax-M2.7": 204800,
-    # Gemini
-    "gemini-3-flash-preview": 1048576,
-    "gemini-3.1-pro": 1048576,
-}
-
-PROVIDER_MODELS = {
-    Provider.GEMINI: [
-        "gemini-3-flash-preview",
-        "gemini-3.1-pro",
-    ],
-    Provider.OPENAI: [
-        "gpt-5.4",
-        "gpt-5.4-mini",
-    ],
-    Provider.ANTHROPIC: [
-        "claude-opus-4-7",
-        "claude-sonnet-4-6",
-        "claude-haiku-4-5",
-    ],
-    Provider.MINIMAX: [
-        "MiniMax-M2.7",
-    ],
-}
-
-
-# ─────────────────────────────────────────────
 # Worker thread
 # ─────────────────────────────────────────────
 
 class RetryableAPIError(RuntimeError):
-    def __init__(self, message, retry_after_seconds=None, provider=None):
+    def __init__(self, message, retry_after_seconds=None, provider=None, rate_limited=True):
         RuntimeError.__init__(self, message)
         self.retry_after_seconds = retry_after_seconds
         self.provider = provider or "unknown"
+        # False for an empty reply: no quota to wait out, so skip the 61s floor.
+        self.rate_limited = rate_limited
 
 
 class SummarizerWorker(QThread):
     """Worker thread that calls AI APIs for each book."""
-    MAX_RETRIES = 3
+    MAX_RETRIES = 4  # 5 attempts, as book writer's AIService
+    EMPTY_RETRY_DELAYS = (3, 8, 20, 45)  # AIService's backoff for empty replies
+    # A reasoning model can spend the whole cap thinking and answer nothing.
+    TRUNCATED_FINISH_REASONS = {'length', 'max_tokens', 'MAX_TOKENS'}
     MIN_RETRY_DELAY_SECONDS = 61.0
     DEFAULT_RETRY_DELAY_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 180
@@ -109,12 +64,16 @@ class SummarizerWorker(QThread):
     book_error = pyqtSignal(int, str)   # (book_id, error_message)
     finished   = pyqtSignal()
 
-    def __init__(self, db, book_ids, api_key, provider, model, prompt_template, max_words, max_input_words, batch_size=1):
+    def __init__(self, db, book_ids, api_key, provider, model, prompt_template, max_words, max_input_words,
+                 batch_size=1, base_url='', model_context=0):
         QThread.__init__(self)
         self.db              = db
         self.book_ids        = book_ids
         self.api_key         = api_key
-        self.provider        = Provider(provider) if isinstance(provider, str) else provider
+        self.provider        = str(provider)
+        self.provider_label  = P.label(self.provider)
+        self.base_url        = base_url or ''
+        self.model_context   = int(model_context or 0)
         self.model           = model
         self.prompt_template = prompt_template
         self.max_words       = max_words
@@ -233,7 +192,7 @@ class SummarizerWorker(QThread):
         if details.get('truncated'):
             self.progress.emit(idx, f'    - Extraction was truncated at {details.get("max_words", self.max_input_words)} words')
 
-        self.progress.emit(idx, f'  Stage: Calling {self.provider.value.title()} API')
+        self.progress.emit(idx, f'  Stage: Calling {self.provider_label} API')
 
         try:
             split_info = self._check_context_split_needed(content)
@@ -279,7 +238,7 @@ class SummarizerWorker(QThread):
                 self.progress.emit(idx, f'    - Finish reason: {api_meta["finish_reason"]}')
             self.progress.emit(idx, f'    - Summary characters: {len(summary)}')
             if not summary:
-                return {'success': False, 'error': f'{self.provider.value.title()} returned an empty response.', 'book_id': book_id}
+                return {'success': False, 'error': f'{self.provider_label} returned an empty response.', 'book_id': book_id}
             return {'success': True, 'summary': summary, 'book_id': book_id}
         except Exception as e:
             return {'success': False, 'error': traceback.format_exc(), 'book_id': book_id}
@@ -291,7 +250,7 @@ class SummarizerWorker(QThread):
 
         Returns None if no splitting needed, or a dict with 'chunks' list if splitting needed.
         """
-        max_context = MODEL_CONTEXT_WINDOWS.get(self.model, 100000)
+        max_context = P.context_window(self.model, self.model_context, provider=self.provider)
         effective_limit = int(max_context * self.CONTEXT_THRESHOLD_RATIO) - self.PROMPT_OVERHEAD_TOKENS
 
         # Convert text to approximate tokens (rough estimate: 1 word ~= 1.5 tokens)
@@ -322,22 +281,37 @@ class SummarizerWorker(QThread):
 
     def _call_api_with_retries(self, prompt, idx):
         total_attempts = self.MAX_RETRIES + 1
+        # Anthropic needs an explicit cap; 2 tokens per requested word, floor 4096.
+        max_tokens = max(4096, int(self.max_words) * 2)
         attempt = 1
         while True:
             try:
                 if attempt > 1:
                     self.progress.emit(idx, f'    - Retry attempt: {attempt}/{total_attempts}')
-                return self._call_api(prompt)
+                summary, api_meta = self._call_api(prompt, max_tokens)
+                if summary:
+                    return summary, api_meta
+                finish_reason = api_meta.get('finish_reason')
+                if finish_reason in self.TRUNCATED_FINISH_REASONS:
+                    max_tokens *= 2
+                    self.progress.emit(idx, f'    - Empty reply hit the token cap; raising it to {max_tokens}')
+                raise RetryableAPIError(
+                    f'{self.provider_label} returned an empty response (finish_reason={finish_reason})',
+                    retry_after_seconds=self.EMPTY_RETRY_DELAYS[min(attempt, len(self.EMPTY_RETRY_DELAYS)) - 1],
+                    provider=self.provider,
+                    rate_limited=False,
+                )
             except RetryableAPIError as e:
                 if attempt > self.MAX_RETRIES:
                     raise RuntimeError(
-                        f'{self.provider.value.title()} request still failing after {self.MAX_RETRIES} retries: {e}'
+                        f'{self.provider_label} request still failing after {self.MAX_RETRIES} retries: {e}'
                     )
 
                 wait_seconds = e.retry_after_seconds
                 if wait_seconds is None:
                     wait_seconds = self.DEFAULT_RETRY_DELAY_SECONDS * attempt
-                wait_seconds = max(self.MIN_RETRY_DELAY_SECONDS, float(wait_seconds))
+                if e.rate_limited:
+                    wait_seconds = max(self.MIN_RETRY_DELAY_SECONDS, float(wait_seconds))
                 self.progress.emit(
                     idx,
                     f'    - Retryable error: {e}. Waiting {wait_seconds:.1f}s before retry {attempt + 1}/{total_attempts}.'
@@ -384,18 +358,17 @@ class SummarizerWorker(QThread):
                 return None
         return None
 
-    def _call_api(self, prompt):
-        """Call AI provider REST API based on self.provider."""
-        if self.provider == Provider.GEMINI:
-            return self._call_gemini(prompt)
-        elif self.provider == Provider.OPENAI:
-            return self._call_openai(prompt)
-        elif self.provider == Provider.ANTHROPIC:
-            return self._call_anthropic(prompt)
-        elif self.provider == Provider.MINIMAX:
-            return self._call_minimax(prompt)
-        else:
-            raise RuntimeError(f'Unknown provider: {self.provider}')
+    def _call_api(self, prompt, max_tokens):
+        """One completion call against whichever provider is configured."""
+        if P.spec(self.provider)['style'] == 'cli':
+            return P.run_cli(self.provider, self.model, prompt)
+        if P.spec(self.provider).get('proxy_start'):
+            P.ensure_openai_oauth_proxy()
+        endpoint, payload, headers, safe_endpoint = P.build_request(
+            self.provider, self.model, prompt, self.api_key, self.base_url,
+            max_tokens=max_tokens,
+        )
+        return self._do_api_request(endpoint, payload, headers, safe_endpoint=safe_endpoint)
 
     def _build_request(self, url, payload, headers, method='POST'):
         """Build and return a urllib Request object."""
@@ -407,104 +380,10 @@ class SummarizerWorker(QThread):
             method=method,
         )
 
-    def _call_openai(self, prompt):
-        """Call OpenAI chat completions API."""
-        endpoint = 'https://api.openai.com/v1/chat/completions'
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self.api_key}',
-        }
-        payload = {
-            'model': self.model,
-            'messages': [{'role': 'user', 'content': prompt}],
-        }
-        return self._do_api_request(endpoint, payload, headers, Provider.OPENAI)
-
-    def _call_anthropic(self, prompt):
-        """Call Anthropic messages API."""
-        endpoint = 'https://api.anthropic.com/v1/messages'
-        headers = {
-            'Content-Type': 'application/json',
-            'x-api-key': self.api_key,
-            'anthropic-version': '2023-06-01',
-        }
-        payload = {
-            'model': self.model,
-            'messages': [{'role': 'user', 'content': prompt}],
-            'max_tokens': 2048,
-        }
-        return self._do_api_request(endpoint, payload, headers, Provider.ANTHROPIC)
-
-    def _call_minimax(self, prompt):
-        """Call MiniMax API using OpenAI-compatible endpoint."""
-        if _HAS_OPENAI_CLIENT:
-            try:
-                client = _OpenAIClient(
-                    api_key=self.api_key,
-                    base_url='https://api.minimax.io/v1'
-                )
-                resp = client.chat.completions.create(
-                    model=self.model,
-                    messages=[{'role': 'user', 'content': prompt}],
-                    extra_body={'reasoning_split': True},
-                    timeout=self.REQUEST_TIMEOUT_SECONDS,
-                )
-                # reasoning_split=True puts thinking in reasoning_details, clean text in content
-                msg = resp.choices[0].message
-                reasoning = getattr(msg, 'reasoning_details', None) or []
-                thinking_text = ''.join(
-                    r.get('text', '') for r in reasoning
-                    if isinstance(r, dict)
-                ) if isinstance(reasoning, list) else ''
-                content = getattr(msg, 'content', '') or ''
-                # Strip thinking blocks that may still appear in content
-                content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
-                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-                # If SUMMARY: label exists, take only what comes after it to remove preamble
-                if 'SUMMARY:' in content:
-                    content = content.split('SUMMARY:', 1)[1]
-                # Strip leading phrases that indicate internal reasoning leaked into output
-                content = re.sub(r"^\s*(The user wants me to|I need to summarize|Let me summarize|This book describes|I'll summarize|Based on the text)", '', content, flags=re.IGNORECASE)
-                text = content.strip()
-                meta = {'choices': len(resp.choices), 'finish_reason': resp.choices[0].finish_reason}
-                if thinking_text:
-                    meta['thinking_chars'] = len(thinking_text)
-                return text, meta
-            except Exception as e:
-                # Fall through to HTTP fallback
-                print(f'[MiniMax] OpenAI client failed: {e}, falling back to HTTP')
-
-        # HTTP fallback
-        endpoint = 'https://api.minimax.io/v1/chat/completions'
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self.api_key}',
-        }
-        payload = {
-            'model': self.model,
-            'messages': [{'role': 'user', 'content': prompt}],
-        }
-        return self._do_api_request(endpoint, payload, headers, Provider.MINIMAX)
-
-    def _call_gemini(self, prompt):
-        """Call Gemini REST API without external SDK dependencies."""
-        safe_endpoint = (
-            'https://generativelanguage.googleapis.com/v1beta/models/'
-            f'{self.model}:generateContent'
-        )
-        endpoint = (
-            'https://generativelanguage.googleapis.com/v1beta/models/'
-            f'{self.model}:generateContent?key={self.api_key}'
-        )
-        payload = {
-            'contents': [{'parts': [{'text': prompt}]}]
-        }
-        headers = {'Content-Type': 'application/json'}
-        return self._do_api_request(endpoint, payload, headers, Provider.GEMINI, safe_endpoint=safe_endpoint)
-
-    def _do_api_request(self, endpoint, payload, headers, provider, safe_endpoint=None):
-        """Execute API request and parse response. Provider-specific parsing happens in _parse_response."""
+    def _do_api_request(self, endpoint, payload, headers, safe_endpoint=None):
+        """Execute the request; providers.parse_response() unpacks the body."""
         safe_endpoint = safe_endpoint or endpoint
+        name = self.provider_label
         req = self._build_request(endpoint, payload, headers)
 
         try:
@@ -523,107 +402,35 @@ class SummarizerWorker(QThread):
                 if retry_after is None and parsed:
                     retry_delay = self._parse_retry_delay_seconds(parsed.get('error') or {})
                 raise RetryableAPIError(
-                    f'{provider.value.title()} HTTP {e.code}',
+                    f'{name} HTTP {e.code}',
                     retry_after_seconds=retry_after or retry_delay,
-                    provider=provider.value,
+                    provider=self.provider,
                 )
-            raise RuntimeError(f'{provider.value.title()} HTTP {e.code} on {safe_endpoint}: {body}')
+            raise RuntimeError(f'{name} HTTP {e.code} on {safe_endpoint}: {body}')
         except (TimeoutError, socket.timeout) as e:
             raise RetryableAPIError(
-                f'{provider.value.title()} request timed out after {self.REQUEST_TIMEOUT_SECONDS}s: {e}',
-                provider=provider.value,
+                f'{name} request timed out after {self.REQUEST_TIMEOUT_SECONDS}s: {e}',
+                provider=self.provider,
             )
         except urlerror.URLError as e:
             reason = str(getattr(e, 'reason', e))
             timeout_like = 'timed out' in reason.lower() or isinstance(getattr(e, 'reason', None), socket.timeout)
             if timeout_like:
                 raise RetryableAPIError(
-                    f'{provider.value.title()} network timeout: {reason}',
-                    provider=provider.value,
+                    f'{name} network timeout: {reason}',
+                    provider=self.provider,
                 )
-            raise RuntimeError(f'{provider.value.title()} request failed on {safe_endpoint}: {reason}')
+            raise RuntimeError(f'{name} request failed on {safe_endpoint}: {reason}')
         except Exception as e:
-            raise RuntimeError(f'{provider.value.title()} request failed on {safe_endpoint}: {e}')
+            raise RuntimeError(f'{name} request failed on {safe_endpoint}: {e}')
 
         try:
             parsed = json.loads(raw)
         except Exception:
-            raise RuntimeError(f'{provider.value.title()} returned non-JSON response.')
+            raise RuntimeError(f'{name} returned non-JSON response.')
 
-        return self._parse_response(parsed, provider)
+        return P.parse_response(parsed, self.provider)
 
-    def _parse_response(self, parsed, provider):
-        """Parse provider-specific response format and extract text."""
-        if provider == Provider.OPENAI:
-            candidates = parsed.get('choices') or []
-            if not candidates:
-                raise RuntimeError(f'{provider.value.title()} returned no choices: {parsed}')
-            message = candidates[0].get('message') or {}
-            text = (message.get('content') or '').strip()
-            meta = {'choices': len(candidates), 'finish_reason': candidates[0].get('finish_reason')}
-            return text, meta
-
-        elif provider == Provider.MINIMAX:
-            candidates = parsed.get('choices') or []
-            if not candidates:
-                raise RuntimeError(f'{provider.value.title()} returned no choices: {parsed}')
-            first = candidates[0]
-            msg = first.get('message') or {}
-            content = msg.get('content') or ''
-            # Handle content as a list of blocks (MiniMax may return [{type, text}])
-            if isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get('type') == 'thinking' or 'thinking' in block:
-                            continue  # Skip extended thinking blocks
-                        if block.get('type') == 'text' and 'text' in block:
-                            text_parts.append(block['text'])
-                        elif 'text' in block and isinstance(block['text'], str):
-                            text_parts.append(block['text'])
-                    elif isinstance(block, str):
-                        text_parts.append(block)
-                text = ''.join(text_parts).strip()
-            elif isinstance(content, str):
-                # Strip thinking blocks and extract after SUMMARY: label
-                text = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
-                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-                if 'SUMMARY:' in text:
-                    text = text.split('SUMMARY:', 1)[1]
-                text = re.sub(r"^\s*(The user wants me to|I need to summarize|Let me summarize|This book describes|I'll summarize|Based on the text)", '', text, flags=re.IGNORECASE).strip()
-            else:
-                text = str(content).strip()
-            meta = {'choices': len(candidates), 'finish_reason': first.get('finish_reason')}
-            return text, meta
-
-        elif provider == Provider.ANTHROPIC:
-            content = parsed.get('content') or []
-            text = ''
-            for block in content:
-                if block.get('type') == 'text':
-                    text = (block.get('text') or '').strip()
-                    break
-            if not text:
-                # Try as a list of dicts (some MiniMax responses)
-                if isinstance(content, list) and content:
-                    text = str(content[0]) if isinstance(content[0], str) else ''
-            meta = {'content_blocks': len(content)}
-            return text, meta
-
-        elif provider == Provider.GEMINI:
-            candidates = parsed.get('candidates') or []
-            if not candidates:
-                msg = parsed.get('error') or parsed
-                raise RuntimeError(f'{provider.value.title()} returned no candidates: {msg}')
-            parts = ((candidates[0].get('content') or {}).get('parts')) or []
-            text = ''.join((p.get('text') or '') for p in parts).strip()
-            meta = {
-                'candidates': len(candidates),
-                'finish_reason': candidates[0].get('finishReason'),
-            }
-            return text, meta
-
-        raise RuntimeError(f'Unknown provider for parsing: {provider}')
     def _extract_book_text(self, book_id, title, max_words=120_000, char_budget=2_000_000):
         """
         Try to extract plain text from the book.
@@ -896,19 +703,20 @@ class SummarizeJob(QDialog):
         self.show()
 
         provider = prefs['provider']
-        api_keys = prefs.get('api_keys', {}) or {}
-        api_key = api_keys.get(provider, '')
+        api_key = P.resolve_key(provider, prefs.get('api_keys', {}) or {})
 
         self.worker = SummarizerWorker(
             db = self.db,
             book_ids = self.book_ids,
             api_key = api_key,
-            provider        = prefs['provider'],
+            provider        = provider,
             model           = prefs['model'],
             prompt_template = prefs['prompt'],
             max_words       = prefs['max_words'],
             max_input_words = prefs['max_input_words'],
             batch_size      = prefs['batch_size'],
+            base_url        = (prefs.get('base_urls', {}) or {}).get(provider, ''),
+            model_context   = prefs.get('model_context', 0),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.book_done.connect(self._on_book_done)

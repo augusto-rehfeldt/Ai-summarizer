@@ -16,6 +16,7 @@ except Exception:
     calibre_get_icons = None
 
 from calibre_plugins.ai_summarizer.config import prefs
+from calibre_plugins.ai_summarizer import providers as P
 
 
 class AISummarizerAction(InterfaceAction):
@@ -24,7 +25,8 @@ class AISummarizerAction(InterfaceAction):
     action_spec = (
         'AI Summarize',
         'icon.png',
-        'Summarize selected books with AI (Gemini, OpenAI, Anthropic, MiniMax) and store in a custom column',
+        'Summarize selected books with AI (Hyper, OpenCode Zen/Go, Claude, OpenAI, Gemini, '
+        'Grok, Groq, OpenRouter, MiniMax) and store in a custom column',
         None
     )
     action_type = 'current'
@@ -74,11 +76,14 @@ class AISummarizerAction(InterfaceAction):
 
             provider = prefs['provider']
             api_keys = prefs.get('api_keys', {})
-            api_key = api_keys.get(provider, '') if isinstance(api_keys, dict) else prefs.get('api_key', '')
-            if not api_key:
+            api_key = P.resolve_key(provider, api_keys if isinstance(api_keys, dict) else {})
+            if not api_key and P.needs_key(provider):
+                envs = ' or '.join(P.spec(provider).get('key_envs') or [])
                 return error_dialog(
                     self.gui, 'No API Key',
-                    f'Please set your {provider.title()} API key in\n'
+                    f'No {P.label(provider)} key found.\n\n'
+                    f'Set {envs} in the environment, log in with the crush/opencode CLI, '
+                    'or paste a key in\n'
                     'Preferences → Plugins → AI Book Summarizer → Customize plugin.',
                     show=True
                 )
@@ -100,7 +105,7 @@ class AISummarizerAction(InterfaceAction):
             if not question_dialog(
                 self.gui, 'Confirm',
                 f'Summarize {count} book(s) using AI?\n'
-                f'Provider: {prefs["provider"]}\nModel: {prefs["model"]}\nColumn: {custom_col}',
+                f'Provider: {P.label(provider)}\nModel: {prefs["model"]}\nColumn: {custom_col}',
             ):
                 return
 

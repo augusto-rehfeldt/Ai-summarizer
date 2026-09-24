@@ -3,10 +3,12 @@ from calibre.customize import InterfaceActionBase
 
 class AISummarizerPlugin(InterfaceActionBase):
     name                    = 'AI Book Summarizer'
-    description             = 'Summarizes selected books using AI APIs (Gemini, OpenAI, Anthropic, MiniMax) and saves to a custom column'
+    description             = ('Summarizes selected books using AI APIs (Hyper, OpenCode Zen/Go, Claude '
+                               'API or CLI, OpenAI, Gemini, Grok, Groq, OpenRouter, MiniMax, or any '
+                               'OpenAI-compatible gateway) and saves to a custom column')
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Calibre Plugin'
-    version                 = (2, 0, 0)
+    version                 = (3, 1, 0)
     minimum_calibre_version = (5, 0, 0)
     actual_plugin           = 'calibre_plugins.ai_summarizer.action:AISummarizerAction'
 

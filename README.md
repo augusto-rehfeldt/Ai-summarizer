@@ -1,158 +1,50 @@
-# AI Book Summarizer — Calibre Plugin
+# Calibre book summarizer
 
-Summarizes books in your Calibre library using AI APIs (Gemini, OpenAI, Anthropic, MiniMax) and stores the result in a custom column.
+Calibre plugin that summarizes selected book text into a configured custom column
+(`#summary` by default). Provider credentials remain in Calibre preferences or the
+existing environment/provider stores.
 
-## Features
+- Check: `python test_providers.py`
+- Build: `python build.py`
+- Install explicitly: `python build.py --install` (close Calibre first).
 
-- **Multi-Provider Support**: Use Google Gemini, OpenAI, Anthropic Claude, or MiniMax
-- **Context-Aware Splitting**: Automatically splits large books when content exceeds 80% of model's context window
-- **Summarizes** EPUB, TXT, HTML, and MOBI books
-- **Configurable** model, prompt template, and word limit (default: 2000 words)
-- **Writes summaries** to any custom Long Text column (default: `#summary`)
-- **Batch-processes** multiple selected books with a progress dialog
+The source files are canonical; the ZIP is a generated artifact.
 
----
+## Providers
 
-## Installation
+Configured as rows in `providers.PROVIDERS`; the config dialog shows the key
+source for each. Supported:
 
-### 1. Install the plugin
+- **Command Code CLI** and **Claude Code CLI** — run on your existing plan,
+  no API key. The executable is looked up on PATH, with a fallback probe of
+  standard Node install dirs (`%APPDATA%\npm`, `C:\nvm4w\nodejs`,
+  `%LOCALAPPDATA%\nvm\*\nodejs`, `Program Files\nodejs`) so a stale GUI PATH
+  does not break the run.
+- **openai-oauth** — talks to a local proxy on `127.0.0.1:10531`; the plugin
+  starts it (`npx openai-oauth@latest --detach`) when nothing is listening.
+- **HTTP gateways** — Hyper (Charm), OpenCode Zen (incl. Go), OpenRouter,
+  Anthropic, OpenAI, Google Gemini, xAI Grok, Groq, MiniMax. Keys come from
+  the config dialog, the environment, or the gateway CLI's own stored login
+  (`opencode` / `crush`).
+- Free, no-cost models are available on Command Code (`poolside/laguna-s-2.1-free`,
+  `inclusionai/ling-3.0-flash-sante:free`) and cheap flash tiers elsewhere.
 
-In Calibre: **Preferences → Plugins → Load plugin from file** → select `AISummarizer.zip`
+## Browse summaries in Story Atlas
 
-Restart Calibre.
+After summarizing books, run from `../book-watch`:
 
-### 2. Create the custom column
-
-**Preferences → Add your own columns → Add column**
-
-| Field | Value |
-|-------|-------|
-| Column id | `summary` |
-| Column heading | `Summary` |
-| Type | Long text / HTML |
-
-Calibre stores it as `#summary`. Restart Calibre after adding.
-
-### 3. Configure
-
-**Preferences → Plugins → AI Book Summarizer → Customize plugin**
-
-- Select your AI provider (Gemini, OpenAI, Anthropic, or MiniMax)
-- Paste your API key
-- Select model
-- Verify column name is `#summary`
-
-### 4. Use
-
-Select one or more books → click **AI Summarize** in the toolbar.
-
----
-
-## GitHub Releases — How to Release & Update
-
-### Repository structure
-
-```
-AISummarizer/              ← this folder becomes the plugin source
-├── __init__.py
-├── action.py
-├── config.py
-├── jobs.py
-├── summarizer.py
-├── images/
-│   └── icon.png
-├── plugin-import-name-ai_summarizer.txt
-└── README.md
-.github/
-└── workflows/
-    └── release.yml        ← auto-builds the zip on every version tag
+```powershell
+python book_watch.py export-atlas --output data/atlas/library.csv
 ```
 
-### One-time setup
+This reads the library configured in book-watch without changing it. It supports
+both normalized text columns and direct comments columns, falling back to ordinary
+book comments when a summary is absent. Use `--summary-column '#your_column'` for
+a different plugin setting. Then run from `../semantic-story-atlas`:
 
-```bash
-git init
-git remote add origin https://github.com/YOUR_USERNAME/calibre-ai-summarizer.git
-git add .
-git commit -m "Initial release"
-git push -u origin main
+```powershell
+python backend/app.py --stories ../book-watch/data/atlas
 ```
-
-### How to publish a new release
-
-**1. Bump the version** in `__init__.py`:
-```python
-version = (2, 0, 0)   # change this
-```
-
-**2. Commit and tag:**
-```bash
-git add __init__.py
-git commit -m "Release v2.0.0"
-git tag v2.0.0
-git push origin main --tags
-```
-
-**3. GitHub Actions automatically:**
-- Zips the plugin source into `AISummarizer.zip`
-- Creates a GitHub Release named `v2.0.0`
-- Attaches the zip as a downloadable asset
-
-Users can then download the zip directly from the **Releases** page.
-
----
-
-## Providers and Models
-
-### Google Gemini
-
-| Model | Context Window | Release Date |
-|-------|---------------|-------------|
-| `gemini-3.1-flash` | 1M tokens | - |
-| `gemini-3.1-pro` | 1M tokens | 2026-02-19 |
-
-Get API key: [Google AI Studio](https://aistudio.google.com/app/apikey)
-
-### OpenAI
-
-| Model | Context Window |
-|-------|---------------|
-| `gpt-5.4` | 256k tokens |
-| `gpt-5.4-mini` | 256k tokens |
-
-Get API key: [OpenAI Platform](https://platform.openai.com/api-keys)
-
-### Anthropic Claude
-
-| Model | Context Window | Release Date |
-|-------|---------------|-------------|
-| `claude-opus-4.7` | 200k tokens | 2026-04-16 |
-| `claude-sonnet-4.6` | 200k tokens | 2026-02-17 |
-| `claude-haiku-4.5` | 200k tokens | 2025-10-15 |
-
-Get API key: [Anthropic Console](https://console.anthropic.com/settings/keys)
-
-### MiniMax
-
-| Model | Context Window | Release Date |
-|-------|---------------|-------------|
-| `MiniMax-M2.7` | 204.8k tokens | 2026-03 |
-
-Get API key: [MiniMax Platform](https://platform.minimaxi.com)
-
----
-
-## Context Window and Text Splitting
-
-When a book's text exceeds 80% of the selected model's context window, the plugin automatically:
-
-1. Splits the text into chunks
-2. Summarizes each chunk individually
-3. Combines and re-summarizes the chunk summaries
-
-This ensures comprehensive coverage even for very long books.
-
----
 
 ## License
 
