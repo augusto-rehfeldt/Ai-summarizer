@@ -8,156 +8,10 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import providers as P
-
-
-def test_request_shapes():
-    url, payload, headers, safe = P.build_request('hyper', 'qwen3.8-flash', 'hi', 'K')
-    assert url == 'https://hyper.charm.land/v1/chat/completions', url
-    assert headers['Authorization'] == 'Bearer K'
-    assert payload['messages'][0]['content'] == 'hi'
-    assert safe == url  # nothing secret in an OpenAI-style URL
-
-    url, payload, headers, safe = P.build_request('anthropic', 'claude-sonnet-5', 'hi', 'K')
-    assert url.endswith('/v1/messages'), url
-    assert headers['x-api-key'] == 'K' and 'max_tokens' in payload
-
-    url, payload, headers, safe = P.build_request('gemini', 'gemini-3.5-flash', 'hi', 'K')
-    assert url.endswith(':generateContent?key=K'), url
-    assert 'K' not in safe, 'the logged URL must not carry the key'
-
-    # A custom base URL is what makes an unlisted gateway usable.
-    url, _, _, _ = P.build_request('openai', 'm', 'hi', 'K', base_url='http://localhost:1234/v1/')
-    assert url == 'http://localhost:1234/v1/chat/completions', url
-
-
-def test_every_openai_call_carries_a_token_cap():
-    """Uncapped, OpenRouter bills the model's whole output budget and 402s."""
-    _, payload, _, _ = P.build_request('openrouter', 'm', 'hi', 'K', max_tokens=4096)
-    assert payload['max_tokens'] == 4096, payload
-    # OpenAI's own API 400s on the older spelling.
-    _, payload, _, _ = P.build_request('openai', 'gpt-5.4', 'hi', 'K', max_tokens=4096)
-    assert payload['max_completion_tokens'] == 4096 and 'max_tokens' not in payload, payload
-
-
-def test_cli_provider_never_builds_an_http_request():
-    for cli_provider in ('claude-cli', 'command-code'):
-        assert P.needs_key(cli_provider) is False
-        try:
-            P.build_request(cli_provider, 'sonnet', 'hi', '')
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError('a cli provider must not fall through to /chat/completions')
-        # list_models() must not go near the network for it either.
-        assert [m for m, _ in P.list_models(cli_provider, '')] == P.spec(cli_provider)['models']
-
-
-def test_cli_command_resolution():
-    """claude gets a system-prompt flag; command-code never resolves to cmd.exe."""
-    saved_which = P.shutil.which
-    P.shutil.which = lambda name: '/fake/%s' % name if name == 'claude' else None
-    try:
-        argv = P.cli_command('claude-cli', 'sonnet')
-        assert argv[0] == '/fake/claude', argv
-        assert argv[-2:] == ['--model', 'sonnet'], argv  # the flag itself is run_cli's job
-
-        # System32's cmd.exe is on PATH, but it is not the coding agent: with only
-        # 'cmd' answerable, command-code must fail loudly instead of running a shell.
-        # Fallback dirs are emptied so a real install on this machine can't answer.
-        P.shutil.which = lambda name: 'C:/WINDOWS/system32/cmd.exe' if name == 'cmd' else None
-        saved_dirs = P._cli_fallback_dirs
-        P._cli_fallback_dirs = lambda: []
-        try:
-            P.cli_command('command-code', 'claude-sonnet-5')
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("must never execute cmd.exe as 'Command Code'")
-        finally:
-            P._cli_fallback_dirs = saved_dirs
-
-        # A CLI invisible to which() is still found in a standard Node install dir.
-        import pathlib
-        fake_dir = pathlib.Path('/fake/nodejs')
-        P._cli_fallback_dirs = lambda: [fake_dir]
-        P._fake_cli_file = fake_dir / 'cmdc.cmd'
-        real_is_file = pathlib.Path.is_file
-        P._real_is_file = real_is_file
-        pathlib.Path.is_file = lambda self: True if self == P._fake_cli_file else real_is_file(self)
-        try:
-            argv = P.cli_command('command-code', 'claude-sonnet-5')
-            assert argv[0] == str(P._fake_cli_file), argv
-        finally:
-            pathlib.Path.is_file = real_is_file
-            P._cli_fallback_dirs = saved_dirs
-
-        P.shutil.which = lambda name: '/fake/%s' % name
-        argv = P.cli_command('command-code', 'claude-sonnet-5')
-        assert argv[0] == '/fake/cmdc', argv  # first candidate wins
-        assert '--append-system-prompt' not in argv, argv
-        assert '--skip-onboarding' in argv and '--no-session' in argv, argv
-    finally:
-        P.shutil.which = saved_which
-
-
-def test_cli_system_prompt_delivery():
-    """The neutral register reaches both CLIs, flag or no flag."""
-    saved_which = P.shutil.which
-    saved_run = P.subprocess.run
-    P.shutil.which = lambda name: '/fake/%s' % name
-    captured = {}
-
-    def fake_run(argv, **kwargs):
-        captured['argv'] = argv
-        captured['input'] = kwargs.get('input')
-
-        class Proc:
-            returncode = 0
-            stdout = 'A plain summary of the book.'
-            stderr = ''
-        return Proc()
-
-    P.subprocess.run = fake_run
-    try:
-        text, meta = P.run_cli('claude-cli', 'sonnet', 'book text')
-        assert 'A plain summary' in text and meta == {'finish_reason': 'stop'}
-        assert any(a == '--append-system-prompt' for a in captured['argv'])
-        assert captured['input'] == 'book text'
-
-        text, _ = P.run_cli('command-code', 'gpt-5.6-terra', 'book text')
-        # no flag: the instruction rides inside the prompt itself
-        assert captured['input'].startswith(P._CLI_SYSTEM) and captured['input'].endswith('book text')
-        assert '--append-system-prompt' not in captured['argv']
-    finally:
-        P.shutil.which = saved_which
-        P.subprocess.run = saved_run
-
-
-def test_cli_exit_codes_are_reported():
-    """A non-zero exit is an error with meaning, not a silent empty summary."""
-    saved_which = P.shutil.which
-    saved_run = P.subprocess.run
-    P.shutil.which = lambda name: '/fake/%s' % name
-
-    class Proc:
-        returncode = 10
-        stdout = ''
-        stderr = 'insufficient credits'
-
-    P.subprocess.run = lambda argv, **kwargs: Proc()
-    try:
-        try:
-            P.run_cli('command-code', 'gpt-5.6-terra', 'book text')
-        except RuntimeError as e:
-            assert 'credits' in str(e) and '10' in str(e), e
-        else:
-            raise AssertionError('exit 10 must raise')
-    finally:
-        P.shutil.which = saved_which
-        P.subprocess.run = saved_run
 
 
 def test_list_models_survives_a_malformed_body():
@@ -326,25 +180,11 @@ def test_openai_oauth_proxy_startup():
         P.socket.create_connection = saved_connect
 
 
-def test_a_quota_notice_is_never_saved_as_a_summary():
-    """`claude -p` prints its quota notice on stdout and exits 0."""
-    assert P._QUOTA.search("You've hit your session limit · resets 9:10am")
-    assert not P._QUOTA.search('The book argues that the limits of growth are political.')
-
-
 def test_every_row_is_complete():
     for name, cfg in P.PROVIDERS.items():
         assert cfg['style'] in ('openai', 'anthropic', 'gemini', 'cli'), name
         assert cfg['default_model'] in cfg['models'], name
         assert cfg['base_url'] or cfg['style'] == 'cli', name
-
-
-def test_parse_openai_strips_reasoning():
-    body = {'choices': [{'message': {'content': '<think>plotting</think>SUMMARY: A book.'},
-                         'finish_reason': 'stop'}]}
-    text, meta = P.parse_response(body, 'hyper')
-    assert text == 'A book.', text
-    assert meta['finish_reason'] == 'stop'
 
 
 def test_parse_preserves_prose_and_strips_only_explicit_reasoning():
@@ -359,49 +199,7 @@ def test_parse_preserves_prose_and_strips_only_explicit_reasoning():
          ' SUMMARY: A book.', 'A book.'),
     ]
     for raw, expected in cases:
-        bodies = {
-            'hyper': {'choices': [{'message': {'content': raw}}]},
-            'anthropic': {'content': [{'type': 'text', 'text': raw}]},
-            'gemini': {'candidates': [{'content': {'parts': [{'text': raw}]}}]},
-        }
-        for provider, body in bodies.items():
-            text, _ = P.parse_response(body, provider)
-            assert text == expected, (provider, raw, text)
-
-
-def test_parse_openai_block_list():
-    body = {'choices': [{'message': {'content': [
-        {'type': 'thinking', 'thinking': 'hmm'},
-        {'type': 'text', 'text': 'Two halves. '},
-        {'type': 'text', 'text': 'One book.'},
-    ]}}]}
-    text, _ = P.parse_response(body, 'minimax')
-    assert text == 'Two halves. One book.', text
-
-
-def test_parse_anthropic_joins_all_text_blocks():
-    body = {'content': [{'type': 'thinking', 'thinking': 'x'},
-                        {'type': 'text', 'text': 'Part one. '},
-                        {'type': 'text', 'text': 'Part two.'}],
-            'stop_reason': 'end_turn'}
-    text, meta = P.parse_response(body, 'anthropic')
-    assert text == 'Part one. Part two.', text
-    assert meta['finish_reason'] == 'end_turn'
-
-
-def test_parse_gemini_and_errors():
-    body = {'candidates': [{'content': {'parts': [{'text': 'A '}, {'text': 'book.'}]},
-                            'finishReason': 'STOP'}]}
-    text, meta = P.parse_response(body, 'gemini')
-    assert text == 'A book.' and meta['finish_reason'] == 'STOP'
-
-    for provider, empty in (('gemini', {'candidates': []}), ('hyper', {'choices': []})):
-        try:
-            P.parse_response(empty, provider)
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError('%s: empty response must raise' % provider)
+        assert P.clean_text(raw) == expected, (raw, P.clean_text(raw))
 
 
 def test_key_resolution_order(tmp_home):
@@ -452,18 +250,11 @@ def test_context_window():
 def test_empty_reply_is_retried_with_a_bigger_cap():
     """A reasoning model that spends the cap thinking answers empty with finish_reason=length."""
     import types
-    stub = types.ModuleType('PyQt5.Qt')
-    for n in ('QDialog', 'QVBoxLayout', 'QHBoxLayout', 'QLabel', 'QPushButton',
-              'QProgressBar', 'QTextEdit', 'QThread'):
-        setattr(stub, n, object)
-    stub.pyqtSignal = lambda *a: None
-    sys.modules.setdefault('PyQt5', types.ModuleType('PyQt5'))
-    sys.modules['PyQt5.Qt'] = stub
     import jobs
 
     w = object.__new__(jobs.SummarizerWorker)
-    w.max_words, w.provider, w.provider_label, w._cancelled = 500, 'hyper', 'Hyper', False
-    w.progress = types.SimpleNamespace(emit=lambda *a: None)
+    w.max_words, w.provider, w.provider_label, w.abort = 500, 'hyper', 'Hyper', threading.Event()
+    w.progress = lambda *a: None
     w._sleep_with_cancel = lambda s: True
     caps = []
     def call(prompt, max_tokens):
@@ -484,6 +275,183 @@ def test_empty_reply_is_retried_with_a_bigger_cap():
     assert len(caps) == jobs.SummarizerWorker.MAX_RETRIES + 1 == 5, caps
 
 
+def test_rows_map_onto_the_shared_service():
+    """Every completion runs on book writer's AIService, built from the provider row."""
+    state = Path(tempfile.gettempdir())
+    o = P.service_overrides('hyper', 'qwen3.8-flash', 'K', '', state)
+    assert o['provider'] == 'openrouter' and o['base_url'] == 'https://hyper.charm.land/v1', o
+    assert o['api_key'] == 'K' and o['headers']['User-Agent'] == P.BROWSER_UA, o
+    assert o['token_param'] == 'max_tokens' and o['writing_model'] == 'qwen3.8-flash', o
+    # OpenAI's own API 400s on the older spelling.
+    assert P.service_overrides('openai', 'gpt-5.4', 'K', '', state)['token_param'] == 'max_completion_tokens'
+    # Anthropic and Gemini publish OpenAI-compatible endpoints; the shared client speaks those.
+    assert P.service_overrides('anthropic', 'm', 'K', '', state)['base_url'] == 'https://api.anthropic.com/v1'
+    gemini = P.service_overrides('gemini', 'gemini-3.5-flash', 'K', '', state)
+    assert gemini['base_url'].endswith('/v1beta/openai'), gemini
+    # ...and the real shared service calls exactly that (no /v1 appended: that 404s).
+    built = P.shared_service('gemini', 'gemini-3.5-flash', 'K', '', state)
+    assert built.base_url == 'https://generativelanguage.googleapis.com/v1beta/openai', built.base_url
+    # The summary cap is sent as given: an uncapped/raised cap gets a 402 on OpenRouter.
+    assert gemini['cap_is_ceiling'] is True, gemini
+    # A custom base URL is what makes an unlisted gateway usable.
+    assert P.service_overrides('openai', 'm', 'K', 'http://localhost:1234/v1/', state)['base_url'] == 'http://localhost:1234/v1'
+    for row, shared in (('claude-cli', 'claude'), ('command-code', 'commandcode')):
+        o = P.service_overrides(row, 'sonnet', '', '', state)
+        assert o['provider'] == shared and 'api_key' not in o and 'base_url' not in o, o
+        assert o['timeout'] == P.CLI_TIMEOUT_SECONDS
+    oauth = P.service_overrides('openai-oauth', 'gpt-5.6-terra', '', '', state)
+    assert oauth['provider'] == 'openai-oauth' and 'api_key' not in oauth, oauth
+    for key in ('groq_rate_state_path', 'usage_state_path'):
+        assert str(oauth[key]).startswith(str(state)), oauth  # never inside the plugin zip
+
+
+def test_shared_module_is_book_writers_and_ships_in_the_zip():
+    module = P.ai_service_module()
+    assert hasattr(module, 'AIService') and hasattr(module, 'EmptyGenerationError')
+    import build
+    assert 'ai_service.py' in build.PLUGIN_FILES
+    assert build.plugin_file_source('ai_service.py') == P.BOOK_WRITER_AI_SERVICE
+
+
+def test_the_plugin_sends_no_completion_requests_itself():
+    here = Path(__file__).resolve().parent
+    jobs_source = (here / 'jobs.py').read_text(encoding='utf-8')
+    providers_source = (here / 'providers.py').read_text(encoding='utf-8')
+    assert 'urlopen' not in jobs_source and 'chat/completions' not in jobs_source
+    for gone in ('def build_request', 'def parse_response', 'def run_cli', '/messages', ':generateContent'):
+        assert gone not in providers_source, gone
+
+
+class _FakeService:
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.calls = []
+
+    def generate_content(self, prompt, **kwargs):
+        self.calls.append((prompt, kwargs))
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def _worker(provider='hyper'):
+    import types
+    import jobs
+    w = object.__new__(jobs.SummarizerWorker)
+    w.provider, w.provider_label, w.model = provider, P.label(provider), 'm'
+    w.api_key, w.base_url, w.abort = 'K', '', threading.Event()
+    return jobs, w
+
+
+def test_call_api_runs_on_the_shared_service_and_translates_errors():
+    jobs, w = _worker()
+    module = P.ai_service_module()
+    saved = P.shared_service
+    try:
+        service = _FakeService('<think>plan</think>SUMMARY: A plain summary.')
+        P.shared_service = lambda *a, **k: service
+        text, meta = w._call_api('book', 4096)
+        assert text == 'A plain summary.' and meta == {'finish_reason': 'stop'}, (text, meta)
+        prompt, kwargs = service.calls[0]
+        assert prompt == 'book' and kwargs['model'] == 'm' and kwargs['max_completion_tokens'] == 4096
+        assert kwargs['max_retries'] == 1 and kwargs['wait_for_limits'] is False
+        assert kwargs.get('system') is None  # HTTP rows send exactly the prompt, as before
+
+        empty = module.EmptyGenerationError('nothing')
+        cut = module.IncompleteGenerationError('cut')
+        for error, reason in ((empty, None), (cut, 'length')):
+            P.shared_service = lambda *a, **k: _FakeService(error)
+            assert w._call_api('book', 4096) == ('', {'finish_reason': reason})
+
+        retryable = [module.ProviderLimitReached('limit', 429), module.TransportError('HTTP 503', 503),
+                     module.TransportError('timed out'), TimeoutError('slow')]
+        for error in retryable:
+            P.shared_service = lambda *a, **k: _FakeService(error)
+            try:
+                w._call_api('book', 4096)
+            except jobs.RetryableAPIError:
+                pass
+            else:
+                raise AssertionError('%r must be retried' % error)
+
+        # A subscription's quota notice is no rate limit: minutes of retrying will not reset it.
+        P.shared_service = lambda *a, **k: _FakeService(module.ProviderLimitReached("You've hit your session limit"))
+        try:
+            w._call_api('book', 4096)
+        except jobs.RetryableAPIError:
+            raise AssertionError('a quota notice must not be retried')
+        except RuntimeError as e:
+            assert 'session limit' in str(e), e
+
+        P.shared_service = lambda *a, **k: _FakeService(module.TransportError('HTTP 401: bad key', 401))
+        try:
+            w._call_api('book', 4096)
+        except jobs.RetryableAPIError:
+            raise AssertionError('a rejected key must not be retried')
+        except RuntimeError as e:
+            assert '401' in str(e), e
+        else:
+            raise AssertionError('401 must raise')
+
+        # CLI rows keep the catalogue register: the neutral summary instruction goes along.
+        _, w = _worker('claude-cli')
+        service = _FakeService('A summary.')
+        P.shared_service = lambda *a, **k: service
+        w._call_api('book', 4096)
+        assert service.calls[0][1]['system'] == P.CLI_SYSTEM
+    finally:
+        P.shared_service = saved
+
+
+def test_job_saves_as_it_goes_and_flags_problems_once_at_the_end():
+    """The Calibre job writes each summary, then raises one error listing every problem."""
+    import queue
+    import jobs
+
+    class DB:
+        def __init__(self):
+            self.fields = {}
+        def field_for(self, name, book_id):
+            return self.fields.get((name, book_id), f'Book {book_id}' if name == 'title' else None)
+        def set_field(self, name, values):
+            if name == '#broken':
+                raise ValueError('no such column')
+            for book_id, val in values.items():
+                self.fields[(name, book_id)] = val
+
+    class Worker:
+        def __init__(self, db, book_ids, abort, progress, book_done, book_error, **kw):
+            self.book_done, self.book_error = book_done, book_error
+        def run(self):
+            self.book_done(1, 'S1')
+            self.book_error(2, 'Traceback...\nRuntimeError: HTTP 402')
+
+    saved, jobs.SummarizerWorker = jobs.SummarizerWorker, Worker
+    log = lambda *a: None
+    log.error = log
+    try:
+        db, notes = DB(), queue.Queue()
+        try:
+            jobs.summarize_books(db, [1, 2], '#summary', {}, notes, threading.Event(), log)
+        except RuntimeError as e:
+            assert str(e).startswith('1 of 2 book(s)') and 'Book 2: RuntimeError: HTTP 402' in str(e), e
+        else:
+            raise AssertionError('a failed book must fail the job')
+        assert db.fields[('#summary', 1)] == 'S1'
+        assert [notes.get()[0] for _ in range(2)] == [0.5, 1.0]
+
+        db = DB()  # a broken column falls back to comments, and is still flagged
+        try:
+            jobs.summarize_books(db, [1], '#broken', {}, queue.Queue(), threading.Event(), log)
+        except RuntimeError as e:
+            assert 'saved to comments instead' in str(e), e
+        else:
+            raise AssertionError('a comments fallback must be flagged')
+        assert 'S1' in db.fields[('comments', 1)]
+    finally:
+        jobs.SummarizerWorker = saved
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
@@ -494,28 +462,22 @@ def main():
         for key in ('AW_API_KEY', 'HYPER_API_KEY'):
             os.environ.pop(key, None)
         try:
-            test_request_shapes()
-            test_every_openai_call_carries_a_token_cap()
-            test_cli_provider_never_builds_an_http_request()
-            test_cli_command_resolution()
-            test_cli_system_prompt_delivery()
-            test_cli_exit_codes_are_reported()
             test_validate_key()
             test_list_models_merges_static_and_filters_non_chat()
             test_list_models_survives_a_malformed_body()
             test_row_contexts_beat_the_flat_table()
             test_validate_key_needs_key_rows_and_gemini_ua()
             test_openai_oauth_proxy_startup()
-            test_a_quota_notice_is_never_saved_as_a_summary()
             test_every_row_is_complete()
-            test_parse_openai_strips_reasoning()
             test_parse_preserves_prose_and_strips_only_explicit_reasoning()
-            test_parse_openai_block_list()
-            test_parse_anthropic_joins_all_text_blocks()
-            test_parse_gemini_and_errors()
             test_key_resolution_order(home)
             test_context_window()
             test_empty_reply_is_retried_with_a_bigger_cap()
+            test_rows_map_onto_the_shared_service()
+            test_shared_module_is_book_writers_and_ships_in_the_zip()
+            test_the_plugin_sends_no_completion_requests_itself()
+            test_call_api_runs_on_the_shared_service_and_translates_errors()
+            test_job_saves_as_it_goes_and_flags_problems_once_at_the_end()
         finally:
             P.Path.home = saved_home
             for key, val in saved_env.items():

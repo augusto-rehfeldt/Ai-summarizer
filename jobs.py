@@ -7,33 +7,31 @@ Providers (base URLs, keys, model lists, response shapes) live in providers.py.
 
 import os
 import traceback
-import json
 import subprocess
 import time
 import re
 import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib import request as urlrequest
-from urllib import error as urlerror
 
 try:
     from calibre_plugins.ai_summarizer import providers as P
 except ImportError:  # running outside Calibre
     import providers as P
 
-try:
-    from qt.core import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                          QPushButton, QProgressBar, QTextEdit,
-                          QThread, pyqtSignal)
-except ImportError:
-    from PyQt5.Qt import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                           QPushButton, QProgressBar, QTextEdit,
-                           QThread, pyqtSignal)
-
 
 # ─────────────────────────────────────────────
 # Worker thread
 # ─────────────────────────────────────────────
+
+def _state_dir():
+    """Where the shared service keeps its small usage ledgers: Calibre's config folder."""
+    try:
+        from calibre.utils.config import config_dir
+        return os.path.join(config_dir, 'plugins')
+    except ImportError:  # outside Calibre (offline checks)
+        import tempfile
+        return tempfile.gettempdir()
+
 
 class RetryableAPIError(RuntimeError):
     def __init__(self, message, retry_after_seconds=None, provider=None, rate_limited=True):
@@ -44,8 +42,8 @@ class RetryableAPIError(RuntimeError):
         self.rate_limited = rate_limited
 
 
-class SummarizerWorker(QThread):
-    """Worker thread that calls AI APIs for each book."""
+class SummarizerWorker:
+    """Summarizes each book; run() blocks, so call it from a Calibre job thread."""
     MAX_RETRIES = 4  # 5 attempts, as book writer's AIService
     EMPTY_RETRY_DELAYS = (3, 8, 20, 45)  # AIService's backoff for empty replies
     # A reasoning model can spend the whole cap thinking and answer nothing.
@@ -59,14 +57,12 @@ class SummarizerWorker(QThread):
     CONTEXT_THRESHOLD_RATIO = 0.8  # Use 80% of context window
     PROMPT_OVERHEAD_TOKENS = 500  # Rough estimate for system+user prompt overhead
 
-    progress   = pyqtSignal(int, str)   # (current_index, message)
-    book_done  = pyqtSignal(int, str)   # (book_id, summary_text)
-    book_error = pyqtSignal(int, str)   # (book_id, error_message)
-    finished   = pyqtSignal()
-
     def __init__(self, db, book_ids, api_key, provider, model, prompt_template, max_words, max_input_words,
-                 batch_size=1, base_url='', model_context=0):
-        QThread.__init__(self)
+                 abort, progress, book_done, book_error, batch_size=1, base_url='', model_context=0):
+        self.abort           = abort       # threading.Event, set when the job is stopped
+        self.progress        = progress    # (current_index, message)
+        self.book_done       = book_done   # (book_id, summary_text)
+        self.book_error      = book_error  # (book_id, error_message)
         self.db              = db
         self.book_ids        = book_ids
         self.api_key         = api_key
@@ -79,21 +75,17 @@ class SummarizerWorker(QThread):
         self.max_words       = max_words
         self.max_input_words = int(max_input_words or self.DEFAULT_MAX_BOOK_WORDS)
         self.batch_size      = max(1, min(batch_size, 20))
-        self._cancelled      = False
-
-    def cancel(self):
-        self._cancelled = True
 
     def run(self):
         try:
             total = len(self.book_ids)
             batch_size = self.batch_size
 
-            self.progress.emit(0, f'Pre-extracting text for {total} books...')
+            self.progress(0, f'Pre-extracting text for {total} books...')
 
             extracted_books = []
             for idx, book_id in enumerate(self.book_ids):
-                if self._cancelled:
+                if self.abort.is_set():
                     break
                 try:
                     mi = self.db.get_metadata(book_id)
@@ -115,17 +107,16 @@ class SummarizerWorker(QThread):
                         'details': details,
                     })
                 except Exception as e:
-                    self.book_error.emit(book_id, traceback.format_exc())
+                    self.book_error(book_id, traceback.format_exc())
 
-            if self._cancelled:
-                self.finished.emit()
+            if self.abort.is_set():
                 return
 
             completed = 0
             total_books = len(extracted_books)
 
             if batch_size > 1 and total_books > 1:
-                self.progress.emit(0, f'Processing {total_books} books with {batch_size} concurrent workers...')
+                self.progress(0, f'Processing {total_books} books with {batch_size} concurrent workers...')
 
                 def process_book(book_data):
                     result = self._summarize_book(book_data)
@@ -134,35 +125,33 @@ class SummarizerWorker(QThread):
                 with ThreadPoolExecutor(max_workers=batch_size) as executor:
                     futures = {executor.submit(process_book, b): b for b in extracted_books}
                     for future in as_completed(futures):
-                        if self._cancelled:
+                        if self.abort.is_set():
                             executor.shutdown(wait=False, cancel_futures=True)
                             break
                         try:
                             book_id, result = future.result()
                             completed += 1
                             if result['success']:
-                                self.book_done.emit(book_id, result['summary'])
+                                self.book_done(book_id, result['summary'])
                             else:
-                                self.book_error.emit(book_id, result['error'])
+                                self.book_error(book_id, result['error'])
                         except Exception as e:
                             book_id = futures[future]['book_id']
-                            self.book_error.emit(book_id, traceback.format_exc())
+                            self.book_error(book_id, traceback.format_exc())
             else:
                 for book_data in extracted_books:
-                    if self._cancelled:
+                    if self.abort.is_set():
                         break
                     completed += 1
                     result = self._summarize_book(book_data)
                     book_id = result['book_id']
                     if result['success']:
-                        self.book_done.emit(book_id, result['summary'])
+                        self.book_done(book_id, result['summary'])
                     else:
-                        self.book_error.emit(book_id, result['error'])
+                        self.book_error(book_id, result['error'])
 
         except Exception as e:
-            self.book_error.emit(-1, f'Fatal error: {traceback.format_exc()}')
-        finally:
-            self.finished.emit()
+            self.book_error(-1, f'Fatal error: {traceback.format_exc()}')
 
     def _summarize_book(self, book_data):
         idx = book_data['idx']
@@ -173,34 +162,34 @@ class SummarizerWorker(QThread):
         details = book_data['details']
         total = len(self.book_ids)
 
-        self.progress.emit(idx, f'[{idx+1}/{total}] {title}')
-        self.progress.emit(idx, '  Stage: Extracting text')
+        self.progress(idx, f'[{idx+1}/{total}] {title}')
+        self.progress(idx, '  Stage: Extracting text')
         available_formats = details.get('formats') or []
-        self.progress.emit(idx, f'    - Available formats: {", ".join(available_formats) if available_formats else "none"}')
-        self.progress.emit(idx, f'    - Chosen format: {details.get("chosen_fmt") or "unknown"}')
+        self.progress(idx, f'    - Available formats: {", ".join(available_formats) if available_formats else "none"}')
+        self.progress(idx, f'    - Chosen format: {details.get("chosen_fmt") or "unknown"}')
         if details.get('path'):
-            self.progress.emit(idx, f'    - Source path: {details["path"]}')
+            self.progress(idx, f'    - Source path: {details["path"]}')
         if details.get('extractor'):
-            self.progress.emit(idx, f'    - Extractor: {details["extractor"]}')
+            self.progress(idx, f'    - Extractor: {details["extractor"]}')
 
         if not content:
             if details.get('error'):
-                self.progress.emit(idx, f'    - Extraction detail: {details["error"]}')
+                self.progress(idx, f'    - Extraction detail: {details["error"]}')
             return {'success': False, 'error': 'Could not extract text from book (no supported format found).', 'book_id': book_id}
 
-        self.progress.emit(idx, f'    - Extracted text: {details.get("word_count", 0)} words, {len(content)} chars')
+        self.progress(idx, f'    - Extracted text: {details.get("word_count", 0)} words, {len(content)} chars')
         if details.get('truncated'):
-            self.progress.emit(idx, f'    - Extraction was truncated at {details.get("max_words", self.max_input_words)} words')
+            self.progress(idx, f'    - Extraction was truncated at {details.get("max_words", self.max_input_words)} words')
 
-        self.progress.emit(idx, f'  Stage: Calling {self.provider_label} API')
+        self.progress(idx, f'  Stage: Calling {self.provider_label} API')
 
         try:
             split_info = self._check_context_split_needed(content)
             if split_info:
-                self.progress.emit(idx, f'    - Large text detected ({split_info["total_chunks"]} chunks), using two-phase summarization')
+                self.progress(idx, f'    - Large text detected ({split_info["total_chunks"]} chunks), using two-phase summarization')
                 chunk_summaries = []
                 for i, (chunk_text, chunk_idx, chunk_total) in enumerate(split_info['chunks']):
-                    self.progress.emit(idx, f'      Chunk {chunk_idx}/{chunk_total}: {len(chunk_text.split())} words')
+                    self.progress(idx, f'      Chunk {chunk_idx}/{chunk_total}: {len(chunk_text.split())} words')
                     chunk_prompt = self.prompt_template.format(
                         title=title,
                         authors=authors,
@@ -209,9 +198,9 @@ class SummarizerWorker(QThread):
                     )
                     chunk_summary, api_meta = self._call_api_with_retries(chunk_prompt, idx)
                     chunk_summaries.append(chunk_summary)
-                    self.progress.emit(idx, f'      Chunk {chunk_idx} summary: {len(chunk_summary)} chars')
+                    self.progress(idx, f'      Chunk {chunk_idx} summary: {len(chunk_summary)} chars')
 
-                self.progress.emit(idx, f'    - Synthesizing {len(chunk_summaries)} chunk summaries into final summary')
+                self.progress(idx, f'    - Synthesizing {len(chunk_summaries)} chunk summaries into final summary')
                 combined_chunks = '\n\n'.join(chunk_summaries)
                 synthesis_prompt = (
                     f"You have summaries of a book in parts. Combine them into a single coherent summary.\n\n"
@@ -221,7 +210,7 @@ class SummarizerWorker(QThread):
                     f"Provide a unified summary in approximately {self.max_words} words:"
                 )
                 summary, api_meta = self._call_api_with_retries(synthesis_prompt, idx)
-                self.progress.emit(idx, f'    - Final synthesized summary: {len(summary)} chars')
+                self.progress(idx, f'    - Final synthesized summary: {len(summary)} chars')
             else:
                 prompt = self.prompt_template.format(
                     title=title,
@@ -229,14 +218,14 @@ class SummarizerWorker(QThread):
                     text=content,
                     max_words=self.max_words
                 )
-                self.progress.emit(idx, f'    - Model: {self.model}')
-                self.progress.emit(idx, f'    - Prompt size: {len(prompt.split())} words, {len(prompt)} chars')
+                self.progress(idx, f'    - Model: {self.model}')
+                self.progress(idx, f'    - Prompt size: {len(prompt.split())} words, {len(prompt)} chars')
                 summary, api_meta = self._call_api_with_retries(prompt, idx)
 
-            self.progress.emit(idx, f'    - API response received')
+            self.progress(idx, f'    - API response received')
             if api_meta.get('finish_reason'):
-                self.progress.emit(idx, f'    - Finish reason: {api_meta["finish_reason"]}')
-            self.progress.emit(idx, f'    - Summary characters: {len(summary)}')
+                self.progress(idx, f'    - Finish reason: {api_meta["finish_reason"]}')
+            self.progress(idx, f'    - Summary characters: {len(summary)}')
             if not summary:
                 return {'success': False, 'error': f'{self.provider_label} returned an empty response.', 'book_id': book_id}
             return {'success': True, 'summary': summary, 'book_id': book_id}
@@ -287,14 +276,14 @@ class SummarizerWorker(QThread):
         while True:
             try:
                 if attempt > 1:
-                    self.progress.emit(idx, f'    - Retry attempt: {attempt}/{total_attempts}')
+                    self.progress(idx, f'    - Retry attempt: {attempt}/{total_attempts}')
                 summary, api_meta = self._call_api(prompt, max_tokens)
                 if summary:
                     return summary, api_meta
                 finish_reason = api_meta.get('finish_reason')
                 if finish_reason in self.TRUNCATED_FINISH_REASONS:
                     max_tokens *= 2
-                    self.progress.emit(idx, f'    - Empty reply hit the token cap; raising it to {max_tokens}')
+                    self.progress(idx, f'    - Empty reply hit the token cap; raising it to {max_tokens}')
                 raise RetryableAPIError(
                     f'{self.provider_label} returned an empty response (finish_reason={finish_reason})',
                     retry_after_seconds=self.EMPTY_RETRY_DELAYS[min(attempt, len(self.EMPTY_RETRY_DELAYS)) - 1],
@@ -312,7 +301,7 @@ class SummarizerWorker(QThread):
                     wait_seconds = self.DEFAULT_RETRY_DELAY_SECONDS * attempt
                 if e.rate_limited:
                     wait_seconds = max(self.MIN_RETRY_DELAY_SECONDS, float(wait_seconds))
-                self.progress.emit(
+                self.progress(
                     idx,
                     f'    - Retryable error: {e}. Waiting {wait_seconds:.1f}s before retry {attempt + 1}/{total_attempts}.'
                 )
@@ -324,112 +313,44 @@ class SummarizerWorker(QThread):
     def _sleep_with_cancel(self, seconds):
         end = time.time() + max(0.0, float(seconds))
         while time.time() < end:
-            if self._cancelled:
+            if self.abort.is_set():
                 return False
             remaining = end - time.time()
             time.sleep(min(0.5, max(0.0, remaining)))
-        return not self._cancelled
-
-    def _parse_retry_delay_seconds(self, error_payload):
-        details = (error_payload or {}).get('details') or []
-        for detail in details:
-            retry_delay = (detail or {}).get('retryDelay')
-            if not retry_delay:
-                continue
-            match = re.match(r'^\s*(\d+(?:\.\d+)?)s\s*$', str(retry_delay))
-            if match:
-                try:
-                    return float(match.group(1))
-                except Exception:
-                    return None
-        return None
-
-    def _parse_retry_after_header_seconds(self, headers):
-        if not headers:
-            return None
-        retry_after = headers.get('Retry-After')
-        if not retry_after:
-            return None
-        retry_after = str(retry_after).strip()
-        if retry_after.isdigit():
-            try:
-                return float(retry_after)
-            except Exception:
-                return None
-        return None
+        return not self.abort.is_set()
 
     def _call_api(self, prompt, max_tokens):
-        """One completion call against whichever provider is configured."""
-        if P.spec(self.provider)['style'] == 'cli':
-            return P.run_cli(self.provider, self.model, prompt)
+        """One completion through book writer's shared AIService, as (text, meta).
+
+        A retry decision stays here, where cancellation and the progress log live:
+        the service makes a single fail-fast attempt and its errors are translated
+        into RetryableAPIError (rate limits, overload, timeouts) or a final error.
+        """
+        module = P.ai_service_module()
+        cli = P.spec(self.provider)['style'] == 'cli'
         if P.spec(self.provider).get('proxy_start'):
-            P.ensure_openai_oauth_proxy()
-        endpoint, payload, headers, safe_endpoint = P.build_request(
-            self.provider, self.model, prompt, self.api_key, self.base_url,
-            max_tokens=max_tokens,
-        )
-        return self._do_api_request(endpoint, payload, headers, safe_endpoint=safe_endpoint)
-
-    def _build_request(self, url, payload, headers, method='POST'):
-        """Build and return a urllib Request object."""
-        data = json.dumps(payload).encode('utf-8')
-        return urlrequest.Request(
-            url,
-            data=data,
-            headers=headers,
-            method=method,
-        )
-
-    def _do_api_request(self, endpoint, payload, headers, safe_endpoint=None):
-        """Execute the request; providers.parse_response() unpacks the body."""
-        safe_endpoint = safe_endpoint or endpoint
+            P.ensure_openai_oauth_proxy()  # the plugin's GUI-safe starter; the service then finds it up
         name = self.provider_label
-        req = self._build_request(endpoint, payload, headers)
-
         try:
-            with urlrequest.urlopen(req, timeout=self.REQUEST_TIMEOUT_SECONDS) as resp:
-                raw = resp.read().decode('utf-8', errors='replace')
-        except urlerror.HTTPError as e:
-            body = e.read().decode('utf-8', errors='replace')
-            if e.code in self.RETRYABLE_HTTP_CODES:
-                retry_after = self._parse_retry_after_header_seconds(getattr(e, 'headers', None))
-                parsed = None
-                try:
-                    parsed = json.loads(body)
-                except Exception:
-                    parsed = None
-                retry_delay = None
-                if retry_after is None and parsed:
-                    retry_delay = self._parse_retry_delay_seconds(parsed.get('error') or {})
-                raise RetryableAPIError(
-                    f'{name} HTTP {e.code}',
-                    retry_after_seconds=retry_after or retry_delay,
-                    provider=self.provider,
-                )
-            raise RuntimeError(f'{name} HTTP {e.code} on {safe_endpoint}: {body}')
-        except (TimeoutError, socket.timeout) as e:
-            raise RetryableAPIError(
-                f'{name} request timed out after {self.REQUEST_TIMEOUT_SECONDS}s: {e}',
-                provider=self.provider,
-            )
-        except urlerror.URLError as e:
-            reason = str(getattr(e, 'reason', e))
-            timeout_like = 'timed out' in reason.lower() or isinstance(getattr(e, 'reason', None), socket.timeout)
-            if timeout_like:
-                raise RetryableAPIError(
-                    f'{name} network timeout: {reason}',
-                    provider=self.provider,
-                )
-            raise RuntimeError(f'{name} request failed on {safe_endpoint}: {reason}')
-        except Exception as e:
-            raise RuntimeError(f'{name} request failed on {safe_endpoint}: {e}')
-
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            raise RuntimeError(f'{name} returned non-JSON response.')
-
-        return P.parse_response(parsed, self.provider)
+            service = P.shared_service(self.provider, self.model, self.api_key, self.base_url, _state_dir())
+            text = service.generate_content(
+                prompt, model=self.model, max_completion_tokens=max_tokens, max_retries=1,
+                wait_for_limits=False, system=P.CLI_SYSTEM if cli else None)
+        except module.EmptyGenerationError:
+            return '', {'finish_reason': None}
+        except module.IncompleteGenerationError:
+            return '', {'finish_reason': 'length'}  # the retry loop doubles the cap
+        except Exception as e:  # noqa: BLE001 - translated below, never swallowed
+            status = getattr(e, 'status_code', None) or getattr(getattr(e, 'response', None), 'status_code', None)
+            if status in self.RETRYABLE_HTTP_CODES:
+                raise RetryableAPIError(f'{name} HTTP {status}', provider=self.provider)
+            timed_out = isinstance(e, (TimeoutError, socket.timeout)) or (
+                status is None and 'timed out' in str(e).lower())
+            if timed_out:
+                raise RetryableAPIError(f'{name} request timed out: {e}', provider=self.provider)
+            # A subscription quota notice (status None) will not reset in minutes of retrying.
+            raise RuntimeError(f'{name} request failed: {e}')
+        return P.clean_text(text or ''), {'finish_reason': 'stop'}
 
     def _extract_book_text(self, book_id, title, max_words=120_000, char_budget=2_000_000):
         """
@@ -652,149 +573,94 @@ class SummarizerWorker(QThread):
 
 
 # ─────────────────────────────────────────────
-# Progress dialog
+# Calibre job
 # ─────────────────────────────────────────────
 
-class SummarizeJob(QDialog):
-    """Dialog that shows progress and runs the summarization job."""
+def summarize_books(db, book_ids, column, worker_kwargs, notifications=None, abort=None, log=None):
+    """ThreadedJob body. The full log lives in the job's details (Jobs → Show details);
+    any problem is collected and raised at the end, so Calibre flags the job once,
+    the way it flags a failed conversion, instead of interrupting per book."""
+    total = len(book_ids)
+    issues = []
+    handled = [0]
 
-    def __init__(self, gui, book_ids):
-        QDialog.__init__(self, gui)
-        self.gui      = gui
-        self.book_ids = book_ids
-        self.db       = gui.current_db.new_api
-        self.worker   = None
-        self.failed_books = []
-
-        self.setWindowTitle('AI Book Summarizer')
-        self.setMinimumWidth(520)
-        self.setMinimumHeight(300)
-
-        layout = QVBoxLayout(self)
-
-        self.status_label = QLabel('Initializing…')
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setMaximum(len(book_ids))
-        self.progress_bar.setValue(0)
-        layout.addWidget(self.progress_bar)
-
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setMinimumHeight(140)
-        layout.addWidget(self.log)
-
-        btn_row = QHBoxLayout()
-        self.cancel_btn = QPushButton('Cancel')
-        self.cancel_btn.clicked.connect(self._cancel)
-        self.close_btn  = QPushButton('Close')
-        self.close_btn.setEnabled(False)
-        self.close_btn.clicked.connect(self.accept)
-        btn_row.addStretch()
-        btn_row.addWidget(self.cancel_btn)
-        btn_row.addWidget(self.close_btn)
-        layout.addLayout(btn_row)
-
-    def start(self):
-        from calibre_plugins.ai_summarizer.config import prefs
-
-        self.show()
-
-        provider = prefs['provider']
-        api_key = P.resolve_key(provider, prefs.get('api_keys', {}) or {})
-
-        self.worker = SummarizerWorker(
-            db = self.db,
-            book_ids = self.book_ids,
-            api_key = api_key,
-            provider        = provider,
-            model           = prefs['model'],
-            prompt_template = prefs['prompt'],
-            max_words       = prefs['max_words'],
-            max_input_words = prefs['max_input_words'],
-            batch_size      = prefs['batch_size'],
-            base_url        = (prefs.get('base_urls', {}) or {}).get(provider, ''),
-            model_context   = prefs.get('model_context', 0),
-        )
-        self.worker.progress.connect(self._on_progress)
-        self.worker.book_done.connect(self._on_book_done)
-        self.worker.book_error.connect(self._on_book_error)
-        self.worker.finished.connect(self._on_finished)
-        self.worker.start()
-
-    def _on_progress(self, idx, msg):
-        if msg and msg.strip():
-            self.status_label.setText(msg)
-        self._log(msg)
-
-    def _on_book_done(self, book_id, summary):
-        from calibre_plugins.ai_summarizer.config import prefs
-        col = prefs['custom_column']
-        mi  = self.db.get_metadata(book_id)
-        title = mi.title
-
+    def title_of(book_id):
         try:
-            # Write to custom column
-            self.db.set_field(col, {book_id: summary})
-            msg = f'✓ Summary saved for: {title}'
+            return db.field_for('title', book_id)
+        except Exception:
+            return f'book_id={book_id}'
+
+    def step(msg):
+        handled[0] += 1
+        notifications.put((min(1.0, handled[0] / total), msg))
+
+    def on_done(book_id, summary):
+        title = title_of(book_id)
+        try:
+            db.set_field(column, {book_id: summary})
+            log(f'✓ Summary saved for: {title}')
         except Exception as e:
-            msg = f'✗ Saved to comments instead for "{title}" (column error: {e})'
-            # Fallback: append to comments
+            # Fallback: append to comments, and flag it -- the column was not written.
             try:
-                old_comments = mi.comments or ''
-                new_comments = old_comments + f'\n\n--- AI Summary ---\n{summary}'
-                self.db.set_field('comments', {book_id: new_comments})
-            except Exception:
-                pass
+                comments = db.field_for('comments', book_id) or ''
+                db.set_field('comments', {book_id: comments + f'\n\n--- AI Summary ---\n{summary}'})
+                issues.append(f'{title}: saved to comments instead ({column} error: {e})')
+            except Exception as e2:
+                issues.append(f'{title}: summary not saved ({e2})')
+            log.error(f'✗ {issues[-1]}')
+        step(title)
 
-        self._log(msg)
-        self.progress_bar.setValue(self.progress_bar.value() + 1)
+    def on_error(book_id, error):
+        title = 'Fatal error' if book_id == -1 else title_of(book_id)
+        log.error(f'✗ Error for "{title}":\n{error}')
+        lines = (error or '').strip().splitlines()
+        issues.append(f'{title}: {lines[-1] if lines else "unknown error"}')  # a traceback's last line
+        step(title)
 
-    def _on_book_error(self, book_id, error):
-        if book_id == -1:
-            self._log(f'FATAL ERROR:\n{error}')
-        else:
-            try:
-                mi    = self.db.get_metadata(book_id)
-                title = mi.title
-            except Exception:
-                title = f'book_id={book_id}'
-            self.failed_books.append(title)
-            self._log(f'✗ Error for "{title}":\n{error}')
-        self.progress_bar.setValue(self.progress_bar.value() + 1)
+    SummarizerWorker(db, book_ids, abort=abort, progress=lambda idx, msg: log(msg),
+                     book_done=on_done, book_error=on_error, **worker_kwargs).run()
+    if abort.is_set():
+        log('Cancelled.')
+    if issues:
+        raise RuntimeError(f'{len(issues)} of {total} book(s) had problems:\n\n' + '\n'.join(issues))
 
-    def _on_finished(self):
-        if self.failed_books:
-            self.status_label.setText(f'Done with errors ({len(self.failed_books)} failed).')
-        else:
-            self.status_label.setText('Done!')
-        self.cancel_btn.setEnabled(False)
-        self.close_btn.setEnabled(True)
-        self._log('\n─── All done ───')
-        if self.failed_books:
-            self._log(f'⚠ Failed books: {len(self.failed_books)}')
-            for title in self.failed_books:
-                self._log(f'  - {title}')
+
+def start_job(gui, book_ids):
+    """Queue the summaries as a Calibre job (bottom-right Jobs spinner), not a window."""
+    from calibre.gui2 import Dispatcher, error_dialog
+    from calibre.gui2.threaded_jobs import ThreadedJob
+    from calibre_plugins.ai_summarizer.config import prefs
+
+    provider = prefs['provider']
+    worker_kwargs = dict(
+        api_key         = P.resolve_key(provider, prefs.get('api_keys', {}) or {}),
+        provider        = provider,
+        model           = prefs['model'],
+        prompt_template = prefs['prompt'],
+        max_words       = prefs['max_words'],
+        max_input_words = prefs['max_input_words'],
+        batch_size      = prefs['batch_size'],
+        base_url        = (prefs.get('base_urls', {}) or {}).get(provider, ''),
+        model_context   = prefs.get('model_context', 0),
+    )
+
+    def done(job):
         # Refresh Calibre's book list
         try:
-            self.gui.iactions['Edit Metadata'].refresh_books_after_metadata_edit(
-                set(self.book_ids)
-            )
+            gui.iactions['Edit Metadata'].refresh_books_after_metadata_edit(set(book_ids))
         except Exception:
             try:
-                self.gui.current_view().model().refresh()
+                gui.current_view().model().refresh()
             except Exception:
                 pass
+        if job.failed:
+            return error_dialog(gui, 'AI Book Summarizer', str(job.exception),
+                                det_msg=job.details, show=True)
+        gui.status_bar.show_message(f'AI summaries saved for {len(book_ids)} book(s)', 5000)
 
-    def _cancel(self):
-        if self.worker:
-            self.worker.cancel()
-        self.cancel_btn.setEnabled(False)
-        self._log('Cancellation requested…')
-
-    def _log(self, msg):
-        self.log.append(msg)
-        sb = self.log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+    job = ThreadedJob(
+        'ai_summarizer', f'AI summarize {len(book_ids)} book(s) with {P.label(provider)}',
+        summarize_books, (gui.current_db.new_api, book_ids, prefs['custom_column'], worker_kwargs), {},
+        Dispatcher(done))
+    gui.job_manager.run_threaded_job(job)
+    gui.status_bar.show_message('AI summarize job started', 3000)

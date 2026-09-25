@@ -37,7 +37,6 @@ class AISummarizerAction(InterfaceAction):
     )
 
     def genesis(self):
-        self._active_jobs = []
         icon = self._load_plugin_icon()
         if icon and not icon.isNull():
             self.qaction.setIcon(icon)
@@ -109,11 +108,8 @@ class AISummarizerAction(InterfaceAction):
             ):
                 return
 
-            from calibre_plugins.ai_summarizer.jobs import SummarizeJob
-            job = SummarizeJob(self.gui, book_ids)
-            self._active_jobs.append(job)
-            job.finished.connect(lambda _=0, j=job: self._drop_job_ref(j))
-            job.start()
+            from calibre_plugins.ai_summarizer.jobs import start_job
+            start_job(self.gui, book_ids)
         except Exception:
             return error_dialog(
                 self.gui,
@@ -173,9 +169,3 @@ class AISummarizerAction(InterfaceAction):
             if val.get('label') == lookup:
                 return True
         return False
-
-    def _drop_job_ref(self, job):
-        try:
-            self._active_jobs.remove(job)
-        except ValueError:
-            pass
