@@ -276,7 +276,7 @@ def test_empty_reply_is_retried_with_a_bigger_cap():
 
 
 def test_rows_map_onto_the_shared_service():
-    """Every completion runs on book writer's AIService, built from the provider row."""
+    """Every completion runs on ai-suite's AIService, built from the provider row."""
     state = Path(tempfile.gettempdir())
     o = P.service_overrides('hyper', 'qwen3.8-flash', 'K', '', state)
     assert o['provider'] == 'openrouter' and o['base_url'] == 'https://hyper.charm.land/v1', o
@@ -305,12 +305,12 @@ def test_rows_map_onto_the_shared_service():
         assert str(oauth[key]).startswith(str(state)), oauth  # never inside the plugin zip
 
 
-def test_shared_module_is_book_writers_and_ships_in_the_zip():
+def test_shared_module_is_the_suites_and_ships_in_the_zip():
     module = P.ai_service_module()
     assert hasattr(module, 'AIService') and hasattr(module, 'EmptyGenerationError')
     import build
     assert 'ai_service.py' in build.PLUGIN_FILES
-    assert build.plugin_file_source('ai_service.py') == P.BOOK_WRITER_AI_SERVICE
+    assert build.plugin_file_source('ai_service.py') == P.SUITE_AI_SERVICE
 
 
 def test_the_plugin_sends_no_completion_requests_itself():
@@ -474,7 +474,7 @@ def main():
             test_context_window()
             test_empty_reply_is_retried_with_a_bigger_cap()
             test_rows_map_onto_the_shared_service()
-            test_shared_module_is_book_writers_and_ships_in_the_zip()
+            test_shared_module_is_the_suites_and_ships_in_the_zip()
             test_the_plugin_sends_no_completion_requests_itself()
             test_call_api_runs_on_the_shared_service_and_translates_errors()
             test_job_saves_as_it_goes_and_flags_problems_once_at_the_end()
