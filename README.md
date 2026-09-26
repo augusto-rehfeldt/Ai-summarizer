@@ -29,7 +29,7 @@ source for each. Supported:
 - Free, no-cost models are available on Command Code (`poolside/laguna-s-2.1-free`,
   `inclusionai/ling-3.0-flash-sante:free`) and cheap flash tiers elsewhere.
 
-## Browse summaries in Story Atlas
+## Browse summaries in Shelfscape
 
 After summarizing books, run from `../book-watch`:
 
@@ -40,7 +40,7 @@ python book_watch.py export-atlas --output data/atlas/library.csv
 This reads the library configured in book-watch without changing it. It supports
 both normalized text columns and direct comments columns, falling back to ordinary
 book comments when a summary is absent. Use `--summary-column '#your_column'` for
-a different plugin setting. Then run from `../semantic-story-atlas`:
+a different plugin setting. Then run from `../shelfscape`:
 
 ```powershell
 python backend/app.py --stories ../book-watch/data/atlas
