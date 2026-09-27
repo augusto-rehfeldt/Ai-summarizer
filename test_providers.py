@@ -439,9 +439,13 @@ def test_job_saves_as_it_goes_and_flags_problems_once_at_the_end():
                 self.fields[(name, book_id)] = val
 
     class Worker:
-        def __init__(self, db, book_ids, abort, progress, book_done, book_error, **kw):
+        def __init__(self, db, book_ids, abort, progress, book_done, book_error, book_progress=None, **kw):
             self.book_done, self.book_error = book_done, book_error
+            self.book_progress = book_progress or (lambda *a: None)
         def run(self):
+            self.book_progress(1, 0.0, 'extracting')
+            self.book_progress(1, 0.2, 'summarizing')
+            self.book_progress(2, 0.5, 'chunk 1/1')
             self.book_done(1, 'S1')
             self.book_error(2, 'Traceback...\nRuntimeError: HTTP 402')
 
@@ -457,7 +461,8 @@ def test_job_saves_as_it_goes_and_flags_problems_once_at_the_end():
         else:
             raise AssertionError('a failed book must fail the job')
         assert db.fields[('#summary', 1)] == 'S1'
-        assert [notes.get()[0] for _ in range(2)] == [0.5, 1.0]
+        # the bar moves within a book, and a finished book replaces its partial share
+        assert [round(notes.get()[0], 3) for _ in range(5)] == [0.0, 0.1, 0.35, 0.75, 1.0]
 
         db = DB()  # a broken column falls back to comments, and is still flagged
         try:

@@ -58,9 +58,11 @@ class SummarizerWorker:
     PROMPT_OVERHEAD_TOKENS = 500  # Rough estimate for system+user prompt overhead
 
     def __init__(self, db, book_ids, api_key, provider, model, prompt_template, max_words, max_input_words,
-                 abort, progress, book_done, book_error, batch_size=1, base_url='', model_context=0):
+                 abort, progress, book_done, book_error, batch_size=1, base_url='', model_context=0,
+                 book_progress=None):
         self.abort           = abort       # threading.Event, set when the job is stopped
         self.progress        = progress    # (current_index, message)
+        self.book_progress   = book_progress or (lambda book_id, fraction, message: None)
         self.book_done       = book_done   # (book_id, summary_text)
         self.book_error      = book_error  # (book_id, error_message)
         self.db              = db
@@ -77,93 +79,56 @@ class SummarizerWorker:
         self.batch_size      = max(1, min(batch_size, 20))
 
     def run(self):
+        """Each book is extracted right before it is summarized, so only the books in
+        flight hold their text (a 5k-book run would otherwise keep gigabytes in memory).
+        book_done/book_error fire on this thread; book_progress fires on the pool's."""
         try:
-            total = len(self.book_ids)
-            batch_size = self.batch_size
-
-            self.progress(0, f'Pre-extracting text for {total} books...')
-
-            extracted_books = []
-            for idx, book_id in enumerate(self.book_ids):
-                if self.abort.is_set():
-                    break
-                try:
-                    mi = self.db.get_metadata(book_id)
-                    title   = mi.title or 'Unknown Title'
-                    authors = ', '.join(mi.authors) if mi.authors else 'Unknown Author'
-
-                    content, details = self._extract_book_text(
-                        book_id,
-                        title,
-                        max_words=self.max_input_words,
-                        char_budget=self.EXTRACTION_CHAR_BUDGET,
-                    )
-                    extracted_books.append({
-                        'idx': idx,
-                        'book_id': book_id,
-                        'title': title,
-                        'authors': authors,
-                        'content': content,
-                        'details': details,
-                    })
-                except Exception as e:
-                    self.book_error(book_id, traceback.format_exc())
-
-            if self.abort.is_set():
-                return
-
-            completed = 0
-            total_books = len(extracted_books)
-
-            if batch_size > 1 and total_books > 1:
-                self.progress(0, f'Processing {total_books} books with {batch_size} concurrent workers...')
-
-                def process_book(book_data):
-                    result = self._summarize_book(book_data)
-                    return book_data['book_id'], result
-
-                with ThreadPoolExecutor(max_workers=batch_size) as executor:
-                    futures = {executor.submit(process_book, b): b for b in extracted_books}
-                    for future in as_completed(futures):
-                        if self.abort.is_set():
-                            executor.shutdown(wait=False, cancel_futures=True)
-                            break
-                        try:
-                            book_id, result = future.result()
-                            completed += 1
-                            if result['success']:
-                                self.book_done(book_id, result['summary'])
-                            else:
-                                self.book_error(book_id, result['error'])
-                        except Exception as e:
-                            book_id = futures[future]['book_id']
-                            self.book_error(book_id, traceback.format_exc())
-            else:
-                for book_data in extracted_books:
+            if self.batch_size > 1:
+                self.progress(0, f'Processing {len(self.book_ids)} books with {self.batch_size} concurrent workers...')
+            with ThreadPoolExecutor(max_workers=self.batch_size) as executor:
+                futures = {executor.submit(self._summarize_book, idx, book_id): book_id
+                           for idx, book_id in enumerate(self.book_ids)}
+                for future in as_completed(futures):
                     if self.abort.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
                         break
-                    completed += 1
-                    result = self._summarize_book(book_data)
-                    book_id = result['book_id']
+                    try:
+                        result = future.result()
+                    except Exception:
+                        self.book_error(futures[future], traceback.format_exc())
+                        continue
                     if result['success']:
-                        self.book_done(book_id, result['summary'])
+                        self.book_done(result['book_id'], result['summary'])
                     else:
-                        self.book_error(book_id, result['error'])
-
+                        self.book_error(result['book_id'], result['error'])
         except Exception as e:
             self.book_error(-1, f'Fatal error: {traceback.format_exc()}')
 
-    def _summarize_book(self, book_data):
-        idx = book_data['idx']
-        book_id = book_data['book_id']
-        title = book_data['title']
-        authors = book_data['authors']
-        content = book_data['content']
-        details = book_data['details']
+    def _summarize_book(self, idx, book_id):
         total = len(self.book_ids)
+        title = f'book_id={book_id}'
 
-        self.progress(idx, f'[{idx+1}/{total}] {title}')
-        self.progress(idx, '  Stage: Extracting text')
+        def stage(fraction, msg):  # this book's share of the job bar, 0..1
+            self.book_progress(book_id, fraction, f'[{idx+1}/{total}] {title}: {msg}')
+
+        if self.abort.is_set():
+            return {'success': False, 'error': 'Cancelled.', 'book_id': book_id}
+        try:
+            mi = self.db.get_metadata(book_id)
+            title   = mi.title or 'Unknown Title'
+            authors = ', '.join(mi.authors) if mi.authors else 'Unknown Author'
+            self.progress(idx, f'[{idx+1}/{total}] {title}')
+            self.progress(idx, '  Stage: Extracting text')
+            stage(0.0, 'extracting text')
+            content, details = self._extract_book_text(
+                book_id,
+                title,
+                max_words=self.max_input_words,
+                char_budget=self.EXTRACTION_CHAR_BUDGET,
+            )
+        except Exception:
+            return {'success': False, 'error': traceback.format_exc(), 'book_id': book_id}
+
         available_formats = details.get('formats') or []
         self.progress(idx, f'    - Available formats: {", ".join(available_formats) if available_formats else "none"}')
         self.progress(idx, f'    - Chosen format: {details.get("chosen_fmt") or "unknown"}')
@@ -182,6 +147,7 @@ class SummarizerWorker:
             self.progress(idx, f'    - Extraction was truncated at {details.get("max_words", self.max_input_words)} words')
 
         self.progress(idx, f'  Stage: Calling {self.provider_label} API')
+        stage(0.2, f'summarizing with {self.provider_label}')  # extraction done: 20% of the book
 
         try:
             split_info = self._check_context_split_needed(content)
@@ -190,6 +156,8 @@ class SummarizerWorker:
                 chunk_summaries = []
                 for i, (chunk_text, chunk_idx, chunk_total) in enumerate(split_info['chunks']):
                     self.progress(idx, f'      Chunk {chunk_idx}/{chunk_total}: {len(chunk_text.split())} words')
+                    # chunk_total calls plus the synthesis share the remaining 80%
+                    stage(0.2 + 0.8 * i / (chunk_total + 1), f'chunk {chunk_idx}/{chunk_total}')
                     chunk_prompt = self.prompt_template.format(
                         title=title,
                         authors=authors,
@@ -201,6 +169,7 @@ class SummarizerWorker:
                     self.progress(idx, f'      Chunk {chunk_idx} summary: {len(chunk_summary)} chars')
 
                 self.progress(idx, f'    - Synthesizing {len(chunk_summaries)} chunk summaries into final summary')
+                stage(0.2 + 0.8 * chunk_total / (chunk_total + 1), 'synthesizing chunk summaries')
                 combined_chunks = '\n\n'.join(chunk_summaries)
                 synthesis_prompt = (
                     f"You have summaries of a book in parts. Combine them into a single coherent summary.\n\n"
@@ -579,9 +548,11 @@ def summarize_books(db, book_ids, column, worker_kwargs, notifications=None, abo
     """ThreadedJob body. The full log lives in the job's details (Jobs → Show details);
     any problem is collected and raised at the end, so Calibre flags the job once,
     the way it flags a failed conversion, instead of interrupting per book."""
+    import threading
     total = len(book_ids)
     issues = []
-    handled = [0]
+    fractions, done = {}, [0.0]  # per-book share finished, and their running sum
+    lock = threading.Lock()      # book_progress arrives from the worker's pool threads
 
     def title_of(book_id):
         try:
@@ -589,9 +560,15 @@ def summarize_books(db, book_ids, column, worker_kwargs, notifications=None, abo
         except Exception:
             return f'book_id={book_id}'
 
-    def step(msg):
-        handled[0] += 1
-        notifications.put((min(1.0, handled[0] / total), msg))
+    def advance(book_id, fraction, msg):
+        with lock:
+            if book_id != -1:  # a fatal error is no book's progress
+                done[0] += fraction - fractions.get(book_id, 0.0)
+                fractions[book_id] = fraction
+            notifications.put((min(1.0, done[0] / total), msg))
+
+    def step(book_id, msg):
+        advance(book_id, 1.0, msg)
 
     def on_done(book_id, summary):
         title = title_of(book_id)
@@ -607,17 +584,18 @@ def summarize_books(db, book_ids, column, worker_kwargs, notifications=None, abo
             except Exception as e2:
                 issues.append(f'{title}: summary not saved ({e2})')
             log.error(f'✗ {issues[-1]}')
-        step(title)
+        step(book_id, title)
 
     def on_error(book_id, error):
         title = 'Fatal error' if book_id == -1 else title_of(book_id)
         log.error(f'✗ Error for "{title}":\n{error}')
         lines = (error or '').strip().splitlines()
         issues.append(f'{title}: {lines[-1] if lines else "unknown error"}')  # a traceback's last line
-        step(title)
+        step(book_id, title)
 
     SummarizerWorker(db, book_ids, abort=abort, progress=lambda idx, msg: log(msg),
-                     book_done=on_done, book_error=on_error, **worker_kwargs).run()
+                     book_done=on_done, book_error=on_error, book_progress=advance,
+                     **worker_kwargs).run()
     if abort.is_set():
         log('Cancelled.')
     if issues:
