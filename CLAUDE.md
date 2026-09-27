@@ -56,7 +56,10 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   `402 … you requested up to 65536 tokens, but can only afford 1804` on an account
   with credit enough for the summary actually asked for. The cap is
   `max(4096, max_words * 2)`; AIService treats a cap as a floor over its 4096 writing
-  default, so this exact value is sent. `token_param` on the row is the spelling
+  default, so this exact value is sent. Rows marked `full_output` (`openai`,
+  `openai-oauth`: billed per token used or by subscription, nothing priced up front)
+  send the model's real output limit instead (`providers.output_cap()`, 128k for
+  gpt-6), so a reasoning model never spends a small cap thinking. `token_param` on the row is the spelling
   (passed through as AIService's `token_param`): gateways take `max_tokens`, OpenAI's
   own API wants `max_completion_tokens` and 400s on the older name.
 - **`needs_key: False` marks a provider that authenticates elsewhere** (`claude-cli`
@@ -115,6 +118,15 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   dialog's Check button: one GET on `/models` (never raises; 401/403 means a rejected
   key, anything else is a warning). CLI providers report "no key needed" without any
   network call.
+- **Limits come from models.dev, the catalogue ai-suite's menus read** (2026-09-27).
+  `providers.model_limits()` reads opencode's `~/.cache/opencode/models.json` if under
+  a day old, else `https://models.dev/api.json`, with ai-suite's per-provider sources.
+  `context_window()` order: dialog override, row `model_contexts` (gateway caps), the
+  models.dev **input** limit (gpt-6-luna: 922k of 1.05M, the rest is output), then the
+  flat table. Before this, `gpt-6-luna`/`gpt-6-sol` were missing from the flat table
+  and openai-oauth chunked them at the 100k default. The openai-oauth proxy's
+  `/v1/models` publishes no windows, so the dialog fills them from models.dev too.
+  OpenAI and openai-oauth default to `gpt-6-luna`.
 - **Context window drives chunking, not the request.** `_check_context_split_needed()`
   splits a book into chunk summaries plus a synthesis pass when the text passes 80% of
   the window. Unknown models fall back to `DEFAULT_CONTEXT_WINDOW` (100k), which

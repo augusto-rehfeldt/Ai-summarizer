@@ -240,11 +240,29 @@ def test_key_resolution_order(tmp_home):
 def test_context_window():
     """Windows track the model, not the provider row: openai-oauth serves the
     same gpt-5.6-terra at 1.05M that command-code does, never the 100k default."""
-    assert P.context_window('gpt-5.4') == 1050000
-    assert P.context_window('gpt-5.6-terra') == 1050000
-    assert P.context_window('gpt-5.6-terra', provider='openai-oauth') == 1050000
-    assert P.context_window('who-knows') == P.DEFAULT_CONTEXT_WINDOW
-    assert P.context_window('gpt-5.4', override=8000) == 8000  # the calibration knob wins
+    saved = P._models_dev_data
+    P._models_dev_data = {}  # offline: the flat table answers
+    try:
+        assert P.context_window('gpt-5.4') == 1050000
+        assert P.context_window('gpt-6-luna', provider='openai-oauth') == 1050000
+        assert P.context_window('who-knows') == P.DEFAULT_CONTEXT_WINDOW
+        assert P.context_window('gpt-5.4', override=8000) == 8000  # the calibration knob wins
+        assert P.output_cap('gpt-6-luna', 500, provider='openai') == 4096
+        # models.dev, as ai-suite reads it, beats the flat table: its input budget
+        # is what chunking fills, and full_output rows get the model's real output
+        P._models_dev_data = {'openai': {'models': {'gpt-6-luna': {
+            'limit': {'context': 1050000, 'input': 922000, 'output': 128000}}}}}
+        assert P.context_window('gpt-6-luna', provider='openai-oauth') == 922000
+        assert P.output_cap('gpt-6-luna', 500, provider='openai-oauth') == 128000
+        assert P.output_cap('gpt-6-luna', 500, provider='openrouter') == 4096  # prices the cap
+        assert P.context_window('gpt-6-luna') == 1050000  # no row, no source
+    finally:
+        P._models_dev_data = saved
+
+
+def test_openai_rows_default_to_gpt_6_luna():
+    assert P.PROVIDERS['openai']['default_model'] == 'gpt-6-luna'
+    assert P.PROVIDERS['openai-oauth']['default_model'] == 'gpt-6-luna'
 
 
 def test_empty_reply_is_retried_with_a_bigger_cap():
@@ -254,6 +272,7 @@ def test_empty_reply_is_retried_with_a_bigger_cap():
 
     w = object.__new__(jobs.SummarizerWorker)
     w.max_words, w.provider, w.provider_label, w.abort = 500, 'hyper', 'Hyper', threading.Event()
+    w.model = 'glm-5.2'
     w.progress = lambda *a: None
     w._sleep_with_cancel = lambda s: True
     caps = []
@@ -472,6 +491,7 @@ def main():
             test_parse_preserves_prose_and_strips_only_explicit_reasoning()
             test_key_resolution_order(home)
             test_context_window()
+            test_openai_rows_default_to_gpt_6_luna()
             test_empty_reply_is_retried_with_a_bigger_cap()
             test_rows_map_onto_the_shared_service()
             test_shared_module_is_the_suites_and_ships_in_the_zip()

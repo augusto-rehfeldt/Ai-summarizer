@@ -164,9 +164,11 @@ PROVIDERS = {
         'key_envs': ['OPENAI_API_KEY'],
         'opencode_auth': ['openai'],
         'token_param': 'max_completion_tokens',
-        'models': ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.5',
-                   'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.4-pro'],
-        'default_model': 'gpt-5.4',
+        'full_output': True,
+        'models': ['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'gpt-5.6-terra',
+                   'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4',
+                   'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.4-pro'],
+        'default_model': 'gpt-6-luna',
     },
     'openai-oauth': {
         'label': 'OpenAI via ChatGPT subscription (openai-oauth proxy)',
@@ -177,9 +179,10 @@ PROVIDERS = {
         # Nothing listens on the proxy port until some npx CLI starts it; the
         # plugin starts it itself instead of requiring another script to be open.
         'proxy_start': True,
-        'models': ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra',
-                   'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
-        'default_model': 'gpt-5.6-terra',
+        'full_output': True,
+        'models': ['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'gpt-5.6-terra',
+                   'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+        'default_model': 'gpt-6-luna',
     },
     'gemini': {
         'label': 'Google Gemini',
@@ -237,6 +240,8 @@ MODEL_CONTEXT_WINDOWS = {
     'gpt-5.6-sol': 1050000,
     'gpt-5.5': 1050000,
     'gpt-6-astra': 1050000,
+    'gpt-6-sol': 1050000,
+    'gpt-6-luna': 1050000,
     'kimi-k2.7-code': 262144,
     'deepseek-v4.1-flash': 1048576,
     'gpt-oss-120b': 131072,
@@ -470,7 +475,9 @@ def _int_or_0(value):
 def _row_models(cfg):
     """The static catalogue of a provider row, with the best context guess."""
     contexts = cfg.get('model_contexts') or {}
-    return [(m, contexts.get(m) or MODEL_CONTEXT_WINDOWS.get(m, 0)) for m in cfg['models']]
+    name = next((k for k, v in PROVIDERS.items() if v is cfg), None)
+    return [(m, contexts.get(m) or model_limits(m, name)[0] or MODEL_CONTEXT_WINDOWS.get(m, 0))
+            for m in cfg['models']]
 
 
 def _models_request(provider, api_key, base_url=''):
@@ -534,7 +541,8 @@ def list_models(provider, api_key, base_url=''):
         return _row_models(cfg)
     seen = {}
     for model_id, ctx in models + _row_models(cfg):
-        seen.setdefault(model_id, ctx)
+        if not seen.get(model_id):  # a live list without windows (openai-oauth) takes ours
+            seen[model_id] = ctx or model_limits(model_id, provider)[0]
     return sorted(seen.items())
 
 
@@ -571,13 +579,83 @@ def validate_key(provider, api_key, base_url=''):
     return True, 'key accepted by %s.' % cfg['label']
 
 
+# models.dev publishes each model's context/input/output limits; it is the catalogue
+# ai-suite's model menus read (ai_suite.providers._models_dev), from the same places:
+# opencode's copy on disk if under a day old, else live, else the stale copy.
+# Sources per row mirror ai-suite's MODELS_DEV_SOURCES.
+MODELS_DEV_URL = 'https://models.dev/api.json'
+MODELS_DEV_CACHE = Path.home() / '.cache' / 'opencode' / 'models.json'
+MODELS_DEV_SOURCES = {
+    'openai': ('openai',), 'openai-oauth': ('openai',),
+    'anthropic': ('anthropic',), 'claude-cli': ('anthropic',),
+    'command-code': ('anthropic', 'openai', 'google', 'openrouter'),
+    'gemini': ('google',), 'grok': ('xai',), 'groq': ('groq',), 'minimax': ('minimax',),
+    'openrouter': ('openrouter',), 'opencode': ('opencode',),
+    'opencode-go': ('opencode-go',), 'hyper': ('hyper',),
+}
+_models_dev_data = None
+
+
+def _models_dev():
+    global _models_dev_data
+    if _models_dev_data is None:
+        _models_dev_data = {}
+        try:
+            if time.time() - MODELS_DEV_CACHE.stat().st_mtime < 86400:
+                _models_dev_data = json.loads(MODELS_DEV_CACHE.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+        if not _models_dev_data:
+            try:
+                req = urlrequest.Request(MODELS_DEV_URL, headers={'User-Agent': BROWSER_UA})
+                with urlrequest.urlopen(req, timeout=10) as resp:
+                    _models_dev_data = json.loads(resp.read().decode('utf-8'))
+            except Exception:
+                try:
+                    _models_dev_data = json.loads(MODELS_DEV_CACHE.read_text(encoding='utf-8'))
+                except Exception:
+                    pass
+    return _models_dev_data
+
+
+def model_limits(model, provider=None):
+    """(input tokens, output tokens) from models.dev, 0 where unknown.
+
+    Input is the usable prompt budget (gpt-6-luna: 922k of a 1.05M window, the
+    rest is reserved for output), so it is what chunking should fill.
+    """
+    for source in MODELS_DEV_SOURCES.get(provider, ()):
+        models = ((_models_dev().get(source) or {}).get('models')) or {}
+        info = models.get(model) or models.get(str(model).lower()) or models.get(str(model).rsplit('/', 1)[-1])
+        if info:
+            limit = info.get('limit') or {}
+            return int(limit.get('input') or limit.get('context') or 0), int(limit.get('output') or 0)
+    return 0, 0
+
+
 def context_window(model, override=0, provider=None):
-    """Tokens for a model id; a provider row's own windows beat the flat table."""
+    """Tokens for a model id: the dialog's override, a row's own gateway cap,
+    models.dev (as ai-suite reads it), then the flat offline table."""
     if override and int(override) > 0:
         return int(override)
     cfg = spec(provider) if provider else {}
     row_contexts = (cfg.get('model_contexts') or {}) if isinstance(cfg, dict) else {}
-    return row_contexts.get(model) or MODEL_CONTEXT_WINDOWS.get(model, DEFAULT_CONTEXT_WINDOW)
+    return (row_contexts.get(model) or model_limits(model, provider)[0]
+            or MODEL_CONTEXT_WINDOWS.get(model, DEFAULT_CONTEXT_WINDOW))
+
+
+def output_cap(model, max_words, provider=None):
+    """Completion-token cap for one summary.
+
+    Rows marked ``full_output`` (billed per token used, or by subscription) get
+    the model's real output limit, so a reasoning model never runs out of room
+    thinking. Everything else keeps the small cap OpenRouter-style gateways need,
+    since they price the whole requested budget up front.
+    """
+    small = max(4096, int(max_words) * 2)
+    if provider and spec(provider).get('full_output'):
+        return max(small, model_limits(model, provider)[1])
+    return small
 
 
 # ─── request/response shaping ────────────────

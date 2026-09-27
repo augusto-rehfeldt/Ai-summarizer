@@ -270,8 +270,7 @@ class SummarizerWorker:
 
     def _call_api_with_retries(self, prompt, idx):
         total_attempts = self.MAX_RETRIES + 1
-        # Anthropic needs an explicit cap; 2 tokens per requested word, floor 4096.
-        max_tokens = max(4096, int(self.max_words) * 2)
+        max_tokens = P.output_cap(self.model, self.max_words, provider=self.provider)
         attempt = 1
         while True:
             try:
