@@ -71,7 +71,18 @@ class ConfigWidget(QWidget):
         provider_layout = QHBoxLayout()
         provider_layout.addWidget(QLabel('Provider:'))
         self.provider_combo = QComboBox(self)
-        for prov_id, cfg in P.PROVIDERS.items():
+        paid = [(k, v) for k, v in P.PROVIDERS.items() if not v.get('free')]
+        free = [(k, v) for k, v in P.PROVIDERS.items() if v.get('free')]
+        for prov_id, cfg in paid:
+            self.provider_combo.addItem(cfg['label'], prov_id)
+        # The free category: a disabled heading item after a separator.
+        self.provider_combo.insertSeparator(self.provider_combo.count())
+        self.provider_combo.addItem('— Free —', None)
+        try:
+            self.provider_combo.model().item(self.provider_combo.count() - 1).setEnabled(False)
+        except Exception:
+            pass
+        for prov_id, cfg in free:
             self.provider_combo.addItem(cfg['label'], prov_id)
         idx = self.provider_combo.findData(prefs['provider'])
         if idx >= 0:
@@ -134,6 +145,9 @@ class ConfigWidget(QWidget):
         model_layout.addWidget(self.fetch_btn)
         api_layout.addLayout(model_layout)
 
+        self.estimate_label = QLabel('')
+        api_layout.addWidget(self.estimate_label)
+
         ctx_layout = QHBoxLayout()
         ctx_layout.addWidget(QLabel('Model context (tokens, 0 = auto):'))
         self.model_context_spin = QSpinBox(self)
@@ -167,6 +181,7 @@ class ConfigWidget(QWidget):
         self.max_words_spin.setRange(100, 5000)
         self.max_words_spin.setSingleStep(100)
         self.max_words_spin.setValue(prefs['max_words'])
+        self.max_words_spin.valueChanged.connect(lambda _v: self._update_estimate())
         words_row.addWidget(self.max_words_spin)
         words_row.addStretch()
         col_layout.addLayout(words_row)
@@ -219,6 +234,7 @@ class ConfigWidget(QWidget):
 
         self.l.addWidget(prompt_group)
         self.l.addStretch()
+        self._update_estimate()
 
         # The saved provider's live list arrives once the dialog is painted.
         QTimer.singleShot(0, lambda: self.fetch_models(auto=True))
@@ -227,16 +243,17 @@ class ConfigWidget(QWidget):
 
     def _populate_models(self, provider, models=None):
         """Fill the model dropdown, keeping whatever the user typed."""
-        current = self.model_combo.currentText().strip()
+        current = P.model_id(self.model_combo.currentText())
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         if models is None:
             models = P._row_models(P.spec(provider))
         self._model_contexts = {mid: ctx for mid, ctx in models if ctx}
-        for model_id, _ctx in models:
-            self.model_combo.addItem(model_id)
+        for model_id, _ctx in models:  # the price per 1M in/out tokens rides along
+            self.model_combo.addItem(model_id + P.TAG_SEP + P.price_tag(model_id, provider))
         self.model_combo.setEditText(current if current else P.spec(provider)['default_model'])
         self.model_combo.blockSignals(False)
+        self._update_estimate()
 
     def _on_provider_changed(self, index):
         """Save the current provider's key/URL, then load the new one's."""
@@ -254,9 +271,24 @@ class ConfigWidget(QWidget):
 
     def _on_model_changed(self, text):
         """A model fetched with a known context window fills the spinbox for you."""
-        ctx = self._model_contexts.get(text.strip())
+        if P.TAG_SEP in text:  # a picked item: keep only the id in the field
+            self.model_combo.blockSignals(True)
+            self.model_combo.setEditText(P.model_id(text))
+            self.model_combo.blockSignals(False)
+        ctx = self._model_contexts.get(P.model_id(text))
         if ctx:
             self.model_context_spin.setValue(int(ctx))
+        self._update_estimate()
+
+    def _update_estimate(self):
+        """Per-book price and time flag for the chosen model."""
+        if not hasattr(self, 'max_words_spin'):
+            return  # still building the dialog
+        price, eta = P.estimate_labels(P.model_id(self.model_combo.currentText()),
+                                       self._current_provider, self.max_words_spin.value())
+        self.estimate_label.setText(
+            '<small>Estimated per %s-word book: <b>%s</b>, <b>%s</b></small>'
+            % ('{:,}'.format(P.TYPICAL_BOOK_WORDS), price, eta))
 
     def _update_provider_hints(self):
         provider = self._current_provider
@@ -389,7 +421,7 @@ class ConfigWidget(QWidget):
         prefs['api_keys'] = self._api_keys
         prefs['base_urls'] = self._base_urls
         prefs['provider'] = current_provider
-        prefs['model'] = self.model_combo.currentText().strip()
+        prefs['model'] = P.model_id(self.model_combo.currentText())
         prefs['model_context'] = self.model_context_spin.value()
         prefs['custom_column'] = custom_column
         prefs['max_words'] = self.max_words_spin.value()

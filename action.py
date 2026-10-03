@@ -101,10 +101,20 @@ class AISummarizerAction(InterfaceAction):
                 )
 
             count = len(book_ids)
+            book_words, guessed = self._book_words(db, book_ids, int(prefs['max_input_words']))
+            price, eta = P.estimate_labels(prefs['model'], provider, prefs['max_words'],
+                                           book_words, int(prefs['batch_size']))
+            basis = f'{sum(book_words):,} words in total'
+            if guessed:
+                basis += (f'; {guessed} PDF/MOBI or unreadable book(s) counted as '
+                          f'{P.TYPICAL_BOOK_WORDS:,} words each')
             if not question_dialog(
                 self.gui, 'Confirm',
                 f'Summarize {count} book(s) using AI?\n'
-                f'Provider: {P.label(provider)}\nModel: {prefs["model"]}\nColumn: {custom_col}',
+                f'Provider: {P.label(provider)}\nModel: {prefs["model"]}\nColumn: {custom_col}\n\n'
+                f'Estimated price: {price}\n'
+                f'Estimated time: {eta}\n'
+                f'({basis}; reasoning tokens can add to both)',
             ):
                 return
 
@@ -156,6 +166,24 @@ class AISummarizerAction(InterfaceAction):
         except Exception:
             pass
         return None
+
+    def _book_words(self, db, book_ids, max_input_words):
+        """(words per book, capped as the job caps them; how many were guessed).
+
+        Counts the file the job will extract from. Formats that need a slow
+        conversion (PDF, MOBI, ...) count as a typical book instead.
+        """
+        # ponytail: reads every selected EPUB on the GUI thread; move to a
+        # background pass if selections of hundreds of books feel slow.
+        words, guessed = [], 0
+        for book_id in book_ids:
+            fmt = P.pick_format(list(db.formats(book_id) or ()))
+            path = db.format_abspath(book_id, fmt) if fmt else None
+            n = P.book_word_count(path, fmt) if path else 0
+            if not n:
+                n, guessed = P.TYPICAL_BOOK_WORDS, guessed + 1
+            words.append(min(n, max_input_words))
+        return words, guessed
 
     def _custom_column_exists(self, db, custom_col):
         metadata = db.field_metadata.custom_field_metadata()

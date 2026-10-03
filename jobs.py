@@ -356,17 +356,7 @@ class SummarizerWorker:
             return '', details
         details['formats'] = formats
 
-        format_priority = ['TXT', 'EPUB', 'MOBI', 'AZW3', 'AZW', 'PDF', 'HTML', 'RTF', 'LIT']
-        formats_upper   = [f.upper() for f in formats]
-
-        chosen_fmt = None
-        for pref in format_priority:
-            if pref in formats_upper:
-                chosen_fmt = formats[formats_upper.index(pref)]
-                break
-
-        if not chosen_fmt:
-            chosen_fmt = formats[0]
+        chosen_fmt = P.pick_format(formats)
         details['chosen_fmt'] = chosen_fmt
 
         path = db.format_abspath(book_id, chosen_fmt)

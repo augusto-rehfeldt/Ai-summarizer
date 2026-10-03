@@ -47,19 +47,17 @@ PROVIDERS = {
         'base_url': 'https://hyper.charm.land/v1',
         'key_envs': ['HYPER_API_KEY', 'AW_API_KEY'],
         'crush_provider': 'hyper',
-        'models': ['qwen3.8-flash', 'qwen3.8-max', 'qwen3.8-27b', 'qwen3.7-max',
-                   'deepseek-v4-pro', 'deepseek-v4-pro-0813', 'deepseek-v4-flash',
-                   'deepseek-v4-flash-0731', 'deepseek-v4.1-flash', 'glm-5.2',
-                   'glm-5.3', 'glm-5.3-flash', 'kimi-k3', 'kimi-k2.7-code',
-                   'minimax-m3', 'gpt-oss-120b'],
-        'default_model': 'qwen3.8-flash',
+        # Same catalogue as ai-suite's ai_config_hyper.json.
+        'models': ['deepseek-v4-pro-0813', 'deepseek-v4-pro', 'deepseek-v4.1-flash',
+                   'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'kimi-k3', 'minimax-m3',
+                   'qwen3.8-max', 'qwen3.8-2.4t-a95b', 'qwen3.7-max', 'inkling'],
+        'default_model': 'deepseek-v4-pro-0813',
         # Hyper caps some families below the model's native window; measured
         # from its /models on 2026-09-22.
         'model_contexts': {
             'minimax-m3': 512000,
             'glm-5.2': 1000000,
             'glm-5.3': 1000000,
-            'deepseek-v4-flash-0731': 1000000,
         },
     },
     'opencode': {
@@ -82,11 +80,13 @@ PROVIDERS = {
         'key_envs': ['OPENCODE_GO_API_KEY'],
         'opencode_auth': ['opencode-go'],
         'crush_provider': 'opencode-go',
-        'models': ['qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus',
-                   'glm-5.3', 'glm-5.2', 'kimi-k3', 'minimax-m3',
-                   'deepseek-v4-pro', 'deepseek-v4-flash', 'grok-4.6', 'grok-4.7',
-                   'gpt-5.6-luna'],
-        'default_model': 'qwen3.8-max',
+        # Same catalogue as ai-suite's ai_config_opencode_go.json.
+        'models': ['glm-5.3', 'glm-5.2', 'glm-5.3-flash', 'kimi-k3', 'kimi-k2.7-code',
+                   'deepseek-v4-pro', 'deepseek-v4.1-flash', 'deepseek-v4-flash',
+                   'qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'mimo-v2.6-pro',
+                   'mimo-v2.6-flash', 'mimo-v2.5-pro', 'minimax-m3', 'longcat-2.0',
+                   'gpt-6-luna', 'grok-4.7'],
+        'default_model': 'glm-5.3',
     },
     'openrouter': {
         'label': 'OpenRouter',
@@ -107,8 +107,9 @@ PROVIDERS = {
         'style': 'anthropic',
         'base_url': 'https://api.anthropic.com/v1',
         'key_envs': ['ANTHROPIC_API_KEY'],
-        'models': ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-haiku-4-5'],
-        'default_model': 'claude-sonnet-5',
+        'models': ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-haiku-4-5',
+                   'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5'],
+        'default_model': 'claude-sonnet-5-5',
     },
     'claude-cli': {
         'label': 'Claude Code CLI (your subscription, no key)',
@@ -118,6 +119,9 @@ PROVIDERS = {
         'needs_key': False,
         'models': ['sonnet', 'opus', 'haiku'],
         'default_model': 'sonnet',
+        # models.dev prices the aliases by their newest family member, whose
+        # 1M window the CLI may not serve; keep chunking at the safe 200k.
+        'model_contexts': {'sonnet': 200000, 'opus': 200000, 'haiku': 200000},
     },
     'command-code': {
         'label': 'Command Code CLI (your plan, no key)',
@@ -125,36 +129,29 @@ PROVIDERS = {
         'base_url': '',
         'key_envs': [],
         'needs_key': False,
-        'models': ['claude-sonnet-5', 'gpt-5.6-terra', 'gpt-5.4',
-                   'deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4.1-flash',
-                   'deepseek/deepseek-v4-flash-fast',
-                   'Qwen/Qwen3.8-Flash', 'Qwen/Qwen3.8-Max', 'Qwen/Qwen3.8-Max-0902',
-                   'Qwen/Qwen3.8-Omni-Flash', 'Qwen/Qwen3.8-27B',
-                   'z-ai/glm-5.3-flash', 'z-ai/glm-5.3-flashx',
-                   'MiniMaxAI/MiniMax-M3',
-                   'poolside/laguna-s-2.1-free', 'inclusionai/ling-3.0-flash-sante:free',
-                   'claude-haiku-4-5-20251001'],
-        'default_model': 'claude-sonnet-5',
+        # Same catalogue as ai-suite's ai_config_commandcode.json. No free ids:
+        # the plan bills every model, whatever `cmdc --list-models` calls FREE.
+        'models': ['deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4.1-flash',
+                   'moonshotai/kimi-k3', 'zai-org/glm-5.3', 'z-ai/glm-5.3-flash',
+                   'minimaxai/minimax-m3', 'xiaomi/mimo-v2.6-pro',
+                   'qwen/qwen3.8-max-0902', 'meituan/longcat-2.0',
+                   'thinkingmachines/inkling', 'claude-sonnet-5', 'claude-opus-5-5',
+                   'claude-fable-5-1', 'gpt-6-astra', 'gpt-6-sol', 'gpt-5.6-luna',
+                   'google/gemini-3.8-flash'],
+        'default_model': 'deepseek/deepseek-v4-pro',
         # Per-row windows: the flat MODEL_CONTEXT_WINDOWS is keyed by bare id and
         # says 200k for claude-sonnet-5, but Command Code's catalog serves it at 1M.
+        # The rest come from models.dev (see MODELS_DEV_SOURCES).
         'model_contexts': {
             'claude-sonnet-5': 1000000,
-            'claude-haiku-4-5-20251001': 200000,
-            'gpt-5.6-terra': 1050000,
-            'gpt-5.4': 400000,
-            'deepseek/deepseek-v4-flash': 1000000,
+            'deepseek/deepseek-v4-pro': 1000000,
             'deepseek/deepseek-v4.1-flash': 1000000,
-            'deepseek/deepseek-v4-flash-fast': 1000000,
-            'Qwen/Qwen3.8-Flash': 1000000,
-            'Qwen/Qwen3.8-Max': 1000000,
-            'Qwen/Qwen3.8-Max-0902': 1000000,
-            'Qwen/Qwen3.8-Omni-Flash': 1000000,
-            'Qwen/Qwen3.8-27B': 262144,
+            'moonshotai/kimi-k3': 1000000,
             'z-ai/glm-5.3-flash': 1050000,
-            'z-ai/glm-5.3-flashx': 1000000,
-            'MiniMaxAI/MiniMax-M3': 1000000,
-            'poolside/laguna-s-2.1-free': 256000,
-            'inclusionai/ling-3.0-flash-sante:free': 262144,
+            'minimaxai/minimax-m3': 1000000,
+            'xiaomi/mimo-v2.6-pro': 1000000,
+            'qwen/qwen3.8-max-0902': 1000000,
+            'meituan/longcat-2.0': 1000000,
         },
     },
     'openai': {
@@ -200,8 +197,8 @@ PROVIDERS = {
         'style': 'openai',
         'base_url': 'https://api.x.ai/v1',
         'key_envs': ['XAI_API_KEY', 'GROK_API_KEY'],
-        'models': ['grok-4.6', 'grok-4.7', 'grok-4.5', 'grok-4-fast', 'grok-4', 'grok-3'],
-        'default_model': 'grok-4.6',
+        'models': ['grok-4.7', 'grok-4.6', 'grok-4.5', 'grok-4.3'],
+        'default_model': 'grok-4.7',
     },
     'groq': {
         'label': 'Groq',
@@ -221,6 +218,83 @@ PROVIDERS = {
         'models': ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed',
                    'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'],
         'default_model': 'MiniMax-M3',
+    },
+    # ─── free: rows marked free cost nothing within the tier's limits ───
+    # Catalogues mirror ai-suite's ai_config_<name>.json.
+    'cerebras': {
+        'label': 'Cerebras (free tier)',
+        'free': True,
+        'style': 'openai',
+        'base_url': 'https://api.cerebras.ai/v1',
+        'key_envs': ['CEREBRAS_API_KEY'],
+        'models': ['gpt-oss-120b', 'qwen-3.8-27b'],
+        'default_model': 'gpt-oss-120b',
+    },
+    'mistral': {
+        'label': 'Mistral La Plateforme (free Experiment tier)',
+        'free': True,
+        'style': 'openai',
+        'base_url': 'https://api.mistral.ai/v1',
+        'key_envs': ['MISTRAL_API_KEY'],
+        'models': ['mistral-medium-latest', 'mistral-large-latest',
+                   'magistral-medium-latest', 'mistral-small-latest'],
+        'default_model': 'mistral-medium-latest',
+    },
+    'cloudflare': {
+        'label': 'Cloudflare Workers AI (free daily allowance)',
+        'free': True,
+        'style': 'openai',
+        # Put your account id in the Base URL field.
+        'base_url': 'https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1',
+        'key_envs': ['CLOUDFLARE_API_TOKEN'],
+        'models': ['@cf/openai/gpt-oss-120b', '@cf/qwen/qwen3.8-27b',
+                   '@cf/nvidia/nemotron-3-120b-a12b', '@cf/google/gemma-4-26b-a4b-it',
+                   '@cf/zai-org/glm-4.7-flash', '@cf/mistralai/mistral-small-3.1-24b-instruct',
+                   '@cf/meta/llama-4-scout-17b-16e-instruct', '@cf/openai/gpt-oss-20b'],
+        'default_model': '@cf/openai/gpt-oss-120b',
+    },
+    'sambanova': {
+        'label': 'SambaNova Cloud (free tier)',
+        'free': True,
+        'style': 'openai',
+        'base_url': 'https://api.sambanova.ai/v1',
+        'key_envs': ['SAMBANOVA_API_KEY'],
+        'models': ['MiniMax-M3', 'MiniMax-M2.7', 'gpt-oss-120b', 'gemma-4-31B-it',
+                   'DeepSeek-V3.2', 'DeepSeek-V3.1', 'Meta-Llama-3.3-70B-Instruct'],
+        'default_model': 'MiniMax-M3',
+    },
+    'pollinations': {
+        'label': 'Pollinations (daily free pollen grant)',
+        'free': True,
+        'style': 'openai',
+        'base_url': 'https://gen.pollinations.ai/v1',
+        'key_envs': ['POLLINATIONS_API_KEY'],
+        'models': ['deepseek/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash', 'openai/gpt-6-luna',
+                   'minimax/minimax-m3', 'z-ai/glm-5.3', 'moonshotai/kimi-k3',
+                   'openai/gpt-6-sol', 'openai/gpt-oss-20b'],
+        'default_model': 'deepseek/deepseek-v4.1-flash',
+    },
+    'nvidia': {
+        'label': 'NVIDIA NIM (free developer tier)',
+        'free': True,
+        'style': 'openai',
+        'base_url': 'https://integrate.api.nvidia.com/v1',
+        'key_envs': ['NVIDIA_API_KEY'],
+        'models': ['moonshotai/kimi-k3', 'z-ai/glm-5.3', 'z-ai/glm-5.3-flash',
+                   'deepseek-ai/deepseek-v4.1-flash', 'nvidia/nemotron-3-ultra-550b-a55b'],
+        'default_model': 'moonshotai/kimi-k3',
+    },
+    'gpt4free': {
+        'label': 'gpt4free (local `g4f api` server, free)',
+        'free': True,
+        'style': 'openai',
+        'base_url': 'http://127.0.0.1:1337/v1',
+        'key_envs': ['G4F_API_KEY'],
+        'needs_key': False,
+        'models': ['deepseek-v4-pro', 'deepseek-v4.1-flash', 'glm-5.3', 'glm-5.3-flash',
+                   'kimi-k3', 'minimax-m3', 'qwen-3.8-2.4t-a95b', 'gemini-3.8-flash',
+                   'mimo-v2.5-pro', 'inkling'],
+        'default_model': 'deepseek-v4-pro',
     },
 }
 
@@ -251,6 +325,9 @@ MODEL_CONTEXT_WINDOWS = {
     'qwen3.8-27b': 1000000,
     'gemini-3.6-flash': 1048576,
     'gemini-3.8-flash': 1048576,
+    'claude-opus-5-5': 200000,
+    'claude-sonnet-5-5': 200000,
+    'claude-fable-5-1': 200000,
     'claude-opus-5': 200000,
     'claude-sonnet-5': 200000,
     'claude-fable-5': 200000,
@@ -592,6 +669,10 @@ MODELS_DEV_SOURCES = {
     'gemini': ('google',), 'grok': ('xai',), 'groq': ('groq',), 'minimax': ('minimax',),
     'openrouter': ('openrouter',), 'opencode': ('opencode',),
     'opencode-go': ('opencode-go',), 'hyper': ('hyper',),
+    'cerebras': ('cerebras',), 'mistral': ('mistral',),
+    'cloudflare': ('cloudflare-workers-ai',), 'sambanova': ('sambanova', 'openrouter'),
+    'pollinations': ('openrouter',), 'nvidia': ('nvidia',),
+    'gpt4free': ('openai', 'anthropic', 'google', 'deepseek', 'openrouter'),
 }
 _models_dev_data = None
 
@@ -624,13 +705,125 @@ def model_limits(model, provider=None):
     Input is the usable prompt budget (gpt-6-luna: 922k of a 1.05M window, the
     rest is reserved for output), so it is what chunking should fill.
     """
+    limit = _model_info(model, provider).get('limit') or {}
+    return int(limit.get('input') or limit.get('context') or 0), int(limit.get('output') or 0)
+
+
+def _model_info(model, provider):
+    """The models.dev entry for a model on a row's sources, or {}."""
     for source in MODELS_DEV_SOURCES.get(provider, ()):
         models = ((_models_dev().get(source) or {}).get('models')) or {}
+        # Claude Code aliases ("opus") follow the newest model of that family, as in ai-suite.
+        family = [m for m in models.values() if m.get('family') == 'claude-%s' % model]
+        if provider == 'claude-cli' and family:
+            return max(family, key=lambda m: m.get('release_date', ''))
         info = models.get(model) or models.get(str(model).lower()) or models.get(str(model).rsplit('/', 1)[-1])
         if info:
-            limit = info.get('limit') or {}
-            return int(limit.get('input') or limit.get('context') or 0), int(limit.get('output') or 0)
-    return 0, 0
+            return info
+    return {}
+
+
+# A typical book for the estimate when the real length is not known yet.
+TYPICAL_BOOK_WORDS = 100000
+TOKENS_PER_WORD = 1.35
+# Subscriptions: the price shown is the API list rate, not what the plan charges.
+SUBSCRIPTION_ROWS = ('claude-cli', 'command-code', 'opencode-go', 'openai-oauth')
+# ponytail: tokens/s guess for the ETA; real speed varies 3x by gateway and model.
+OUTPUT_TOKENS_PER_SECOND = 50
+INPUT_TOKENS_PER_SECOND = 5000
+
+
+def estimate(model, provider, max_words, book_words=TYPICAL_BOOK_WORDS):
+    """(usd_or_None, seconds) for summarizing one book.
+
+    usd is 0 on free rows and None when models.dev has no price. Ignores
+    reasoning tokens and chunk syntheses, so it is a floor, not a quote.
+    """
+    tokens_in = book_words * TOKENS_PER_WORD
+    tokens_out = max_words * TOKENS_PER_WORD
+    seconds = tokens_in / INPUT_TOKENS_PER_SECOND + tokens_out / OUTPUT_TOKENS_PER_SECOND
+    if spec(provider).get('free'):
+        return 0.0, seconds
+    cost = _model_info(model, provider).get('cost') or {}
+    if 'input' not in cost or 'output' not in cost:
+        return None, seconds
+    return (tokens_in * cost['input'] + tokens_out * cost['output']) / 1e6, seconds
+
+
+def estimate_labels(model, provider, max_words, book_words=(TYPICAL_BOOK_WORDS,), parallel=1):
+    """('~$0.42', '~3 min') for the config dialog and the run confirmation.
+
+    book_words holds one word count per book. Books run `parallel` at a time:
+    the wall clock shrinks, the bill does not.
+    """
+    per_book = [estimate(model, provider, max_words, words) for words in book_words]
+    usd = None if any(u is None for u, _ in per_book) else sum(u for u, _ in per_book)
+    if usd is None:
+        price = 'unknown (no list price on models.dev)'
+    elif usd == 0:
+        price = 'free'
+    else:
+        price = '~$%.2f' % usd if usd >= 0.01 else '<$0.01'
+        if provider in SUBSCRIPTION_ROWS:
+            price += ' at API list price (your plan pays)'
+    minutes = sum(s for _, s in per_book) / max(1, min(parallel, len(per_book))) / 60
+    return price, ('~%d min' % round(minutes) if minutes >= 1 else '<1 min')
+
+
+def price_tag(model, provider):
+    """'$1.25/$10' per 1M input/output tokens for the model dropdown, or 'free'."""
+    if spec(provider).get('free'):
+        return 'free'
+    cost = _model_info(model, provider).get('cost') or {}
+    if 'input' not in cost or 'output' not in cost:
+        return '$?'
+    if not (cost['input'] or cost['output']):
+        return 'free'
+    tag = '$%.3g/$%.3g' % (cost['input'], cost['output'])
+    return 'plan (list %s)' % tag if provider in SUBSCRIPTION_ROWS else tag
+
+
+# Model dropdown items read "<id>   ·  <price>"; the id is what gets saved.
+TAG_SEP = '   ·  '
+
+
+def model_id(text):
+    return str(text).split(TAG_SEP, 1)[0].strip()
+
+
+# Format the job extracts from, best first (jobs._extract_book_text uses it too).
+FORMAT_PRIORITY = ['TXT', 'EPUB', 'MOBI', 'AZW3', 'AZW', 'PDF', 'HTML', 'RTF', 'LIT']
+
+
+def pick_format(formats):
+    upper = [f.upper() for f in formats]
+    for pref in FORMAT_PRIORITY:
+        if pref in upper:
+            return formats[upper.index(pref)]
+    return formats[0] if formats else None
+
+
+def book_word_count(path, fmt):
+    """Words in a book file, counted without converting it; 0 when the format
+    (PDF, MOBI, ...) would need a slow conversion. Tag-stripped, so markup
+    words do not count."""
+    fmt = (fmt or '').upper()
+    tags = re.compile(rb'<(script|style)\b.*?</\1>|<[^>]+>', re.S | re.I)
+    try:
+        if fmt == 'TXT':
+            with open(path, 'rb') as f:
+                return len(f.read().split())
+        if fmt in ('HTML', 'HTM'):
+            with open(path, 'rb') as f:
+                return len(tags.sub(b' ', f.read()).split())
+        if fmt == 'EPUB':
+            import zipfile
+            with zipfile.ZipFile(path) as zf:
+                return sum(len(tags.sub(b' ', zf.read(n)).split()) for n in zf.namelist()
+                           if n.lower().endswith(('.html', '.xhtml', '.htm')))
+    except Exception:  # an unreadable file just falls back to the typical book
+        return 0
+    return 0
 
 
 def context_window(model, override=0, provider=None):

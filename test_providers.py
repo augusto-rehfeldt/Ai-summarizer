@@ -102,9 +102,66 @@ def test_list_models_merges_static_and_filters_non_chat():
         assert models.get('brand-new-model') == 999000, models
         assert 'tts-1' not in models and 'text-embed-3' not in models, models
         # static catalogue survives the merge
-        assert 'qwen3.8-flash' in models, models
+        assert 'qwen3.8-max' in models, models
     finally:
         P.urlrequest.urlopen = saved_urlopen
+
+
+def test_anthropic_defaults_to_the_newest_sonnet():
+    anthropic = P.spec('anthropic')
+    assert anthropic['default_model'] == 'claude-sonnet-5-5'
+    assert {'claude-opus-5-5', 'claude-fable-5-1'} <= set(anthropic['models'])
+    assert P.context_window('claude-sonnet-5-5') == 200000
+
+
+def test_command_code_matches_the_suite_and_free_rows_cost_nothing():
+    cc = P.spec('command-code')
+    assert not [m for m in cc['models'] if 'free' in m.lower()], cc['models']
+    assert cc['default_model'] == 'deepseek/deepseek-v4-pro'
+    free = [k for k, v in P.PROVIDERS.items() if v.get('free')]
+    assert {'cerebras', 'mistral', 'gpt4free'} <= set(free), free
+    assert P.estimate('gpt-oss-120b', 'cerebras', 2000)[0] == 0.0
+    assert P.estimate_labels('gpt-oss-120b', 'cerebras', 2000)[0] == 'free'
+
+
+def test_estimate_prices_a_book_from_models_dev():
+    saved = P._models_dev_data
+    P._models_dev_data = {'openai': {'models': {'gpt-6-luna': {'cost': {'input': 1, 'output': 10}}}}}
+    try:
+        usd, seconds = P.estimate('gpt-6-luna', 'openai', 1000, book_words=100000)
+        assert abs(usd - (135000 * 1 + 1350 * 10) / 1e6) < 1e-9, usd
+        assert seconds > 0
+        price, eta = P.estimate_labels('gpt-6-luna', 'openai', 1000, [100000] * 10, parallel=5)
+        assert price.startswith('~$1.4'), price
+        assert 'plan pays' in P.estimate_labels('gpt-6-luna', 'openai-oauth', 1000)[0]
+        assert P.estimate('who-knows', 'openai', 1000)[0] is None
+        assert P.price_tag('gpt-6-luna', 'openai') == '$1/$10'
+        assert P.price_tag('gpt-6-luna', 'openai-oauth') == 'plan (list $1/$10)'
+        assert P.price_tag('who-knows', 'openai') == '$?'
+        assert P.price_tag('anything', 'cerebras') == 'free'
+        assert P.model_id('gpt-6-luna' + P.TAG_SEP + '$1/$10') == 'gpt-6-luna'
+        assert P.model_id(' typed-id ') == 'typed-id'
+    finally:
+        P._models_dev_data = saved
+
+
+def test_book_word_count_reads_the_file_the_job_uses():
+    import zipfile
+    assert P.pick_format(['PDF', 'epub', 'MOBI']) == 'epub'
+    assert P.pick_format(['DJVU']) == 'DJVU'
+    with tempfile.TemporaryDirectory() as tmp:
+        epub = Path(tmp) / 'b.epub'
+        with zipfile.ZipFile(epub, 'w') as zf:
+            zf.writestr('ch1.xhtml', '<html><style>p {x: y}</style><p>one two</p>'
+                                     '<p class="z">three</p></html>')
+            zf.writestr('ch2.html', '<p>four five</p>')
+            zf.writestr('toc.ncx', '<nav>not counted</nav>')
+        assert P.book_word_count(str(epub), 'EPUB') == 5
+        txt = Path(tmp) / 'b.txt'
+        txt.write_text('a b  c\nd', encoding='utf-8')
+        assert P.book_word_count(str(txt), 'txt') == 4
+        assert P.book_word_count(str(txt), 'PDF') == 0  # needs conversion: caller guesses
+        assert P.book_word_count(str(Path(tmp) / 'gone.epub'), 'EPUB') == 0
 
 
 def test_row_contexts_beat_the_flat_table():
@@ -490,6 +547,10 @@ def main():
             test_list_models_merges_static_and_filters_non_chat()
             test_list_models_survives_a_malformed_body()
             test_row_contexts_beat_the_flat_table()
+            test_anthropic_defaults_to_the_newest_sonnet()
+            test_command_code_matches_the_suite_and_free_rows_cost_nothing()
+            test_estimate_prices_a_book_from_models_dev()
+            test_book_word_count_reads_the_file_the_job_uses()
             test_validate_key_needs_key_rows_and_gemini_ua()
             test_openai_oauth_proxy_startup()
             test_every_row_is_complete()

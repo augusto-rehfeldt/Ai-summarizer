@@ -147,5 +147,22 @@ result to a custom column (`#summary`). Text comes out of the book file itself
   (as book-writer's AIService) with AIService's short backoff, not the 61s rate-limit floor.
   `finish_reason` `length` with no text means a reasoning model spent the whole cap
   thinking (seen 2026-09-24 on Zen `space-bunny-free`), so each such retry doubles the cap.
+- **Catalogues follow ai-suite's configs** (re-synced 2026-09-30: hyper, opencode-go,
+  command-code, grok, plus the free rows). Command Code has no free ids: its plan bills
+  every model, whatever `cmdc --list-models` labels FREE. Rows marked `free` (cerebras,
+  mistral, cloudflare, sambanova, pollinations, nvidia, gpt4free) sit under a "— Free —"
+  heading in the provider combo. Cloudflare needs the account id put in its Base URL.
+- **Price and time are estimates** (`providers.estimate()` / `estimate_labels()`) at
+  1.35 tokens/word, priced from models.dev `cost`, free rows at $0, subscription rows
+  flagged as list price. The run confirmation counts each selected book's real words
+  (`book_word_count()` on the format `pick_format()` chooses — the job's own choice;
+  TXT/HTML/EPUB are counted tag-stripped, PDF/MOBI would need a slow conversion so they
+  count as a 100k-word book), capped by max input words. The config dialog shows a
+  100k-word book. The ETA uses fixed token rates. Reasoning tokens and chunk syntheses
+  are ignored, so both are floors.
+- **Model dropdown items carry their price** (`"<id>   ·  $in/$out"` per 1M tokens,
+  `free`, `plan (list …)` or `$?`); `providers.model_id()` strips the tag, and the
+  config dialog keeps only the id in the edit field and in prefs. Claude CLI aliases
+  are priced by their newest family member but keep the 200k row window.
 - **The source of truth is this folder, not the installed zip.** Calibre only ever sees
   `AI Book Summarizer.zip`; `build.py --install` copies it over, keeping a `.zip.bak`.
